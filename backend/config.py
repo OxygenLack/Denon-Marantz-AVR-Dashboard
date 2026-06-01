@@ -30,10 +30,24 @@ class Settings(BaseSettings):
     # UI theme: gold (default), blue, red, green, olive, violet, purple, pink, orange
     theme: str = "gold"
 
+    # Android TV Remote protocol v2
+    android_tv_host: str = ""
+    android_tv_client_name: str = "Denon Dashboard"
+    android_tv_storage_dir: str = "/data/androidtv"
+
+    # Optional Android Debug Bridge integration for screenshots/app launching.
+    android_tv_adb_enabled: bool = False
+    android_tv_adb_path: str = "adb"
+    android_tv_adb_port: int = 5555
+    android_tv_adb_storage_dir: str = "/data/adb"
+
     # CORS allowed origins (comma-separated). Empty = no CORS headers (same-origin only).
     cors_origins: str = ""
 
     log_level: str = "INFO"
+
+    # Demo mode: simulate a receiver without a real connection
+    demo_mode: bool = False
 
     @property
     def source_name_map(self) -> dict[str, str]:

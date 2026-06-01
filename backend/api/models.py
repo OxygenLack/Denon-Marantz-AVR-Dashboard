@@ -1,9 +1,10 @@
 """Pydantic models for the API."""
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # -- Request models --
@@ -118,6 +119,37 @@ class DeviceInfoResponse(BaseModel):
     channel_names: dict[str, str] = {}
     receiver_ip: str | None = None
     theme: str = "gold"
+
+
+_VALID_THEME_NAMES = {'gold', 'blue', 'red', 'green', 'olive', 'violet', 'purple', 'pink', 'orange'}
+_VALID_OVERRIDE_KEYS = {'--accent', '--accent-dim', '--bg', '--card', '--surface', '--border', '--text', '--muted'}
+_HEX_RE = re.compile(r'^#[0-9a-fA-F]{3,8}$')
+
+
+class ThemeConfig(BaseModel):
+    base: str = "gold"
+    overrides: dict[str, str] = {}
+
+    @field_validator('base')
+    @classmethod
+    def base_must_be_valid(cls, v: str) -> str:
+        if v not in _VALID_THEME_NAMES:
+            raise ValueError(f"base must be one of {sorted(_VALID_THEME_NAMES)}")
+        return v
+
+    @field_validator('overrides')
+    @classmethod
+    def overrides_must_be_valid(cls, v: dict[str, str]) -> dict[str, str]:
+        for key, val in v.items():
+            if key not in _VALID_OVERRIDE_KEYS:
+                raise ValueError(f"override key '{key}' not allowed; valid keys: {sorted(_VALID_OVERRIDE_KEYS)}")
+            if not _HEX_RE.match(val):
+                raise ValueError(f"override value '{val}' must be a hex color (e.g. #RRGGBB)")
+        return v
+
+
+class PreferencesResponse(BaseModel):
+    theme: ThemeConfig
 
 
 class HealthResponse(BaseModel):

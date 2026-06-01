@@ -18,7 +18,7 @@ from starlette.responses import Response
 from config import settings
 from denon.const import COMMAND_PATTERN
 from denon.discovery import discover_receivers
-from routes import power, volume, audio, zone2, media, status
+from routes import power, volume, audio, zone2, media, status, androidtv
 from state import app_state
 
 # ---- Logging ----
@@ -61,10 +61,48 @@ async def _auto_discover_and_connect() -> None:
         await asyncio.sleep(30)
 
 
+async def _auto_connect_adb(host: str, port: int) -> None:
+    """Background task: connect ADB with retries after Android TV startup."""
+    if not settings.android_tv_adb_enabled:
+        return
+    for attempt in range(1, 13):
+        try:
+            _LOGGER.info(
+                "Connecting to Android TV ADB host %s:%s (attempt %d/12)...",
+                host,
+                port,
+                attempt,
+            )
+            status = await app_state.android_adb.connect(host, port)
+            if status.get("connected"):
+                _LOGGER.info("Android TV ADB connected to %s:%s", host, port)
+                await app_state.broadcast_state()
+                return
+            _LOGGER.warning(
+                "Android TV ADB connect returned state=%s",
+                status.get("state") or "unknown",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            _LOGGER.warning(
+                "Android TV ADB auto-connect attempt %d/12 failed: %s",
+                attempt,
+                message,
+            )
+        await asyncio.sleep(10)
+    _LOGGER.warning("Android TV ADB auto-connect gave up for %s:%s", host, port)
+
+
 # ---- Lifespan ----
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from preferences import load_preferences
+    prefs = load_preferences()
+    app_state.theme_config = prefs.get("theme", {"base": "gold", "overrides": {}})
+
     # Build source name cache from env config
     app_state.source_name_cache = settings.source_name_map.copy()
     _LOGGER.info(
@@ -75,9 +113,13 @@ async def lifespan(app: FastAPI):
 
     # Track background tasks for graceful shutdown
     bg_task: asyncio.Task | None = None
+    adb_task: asyncio.Task | None = None
 
     host = settings.denon_host
-    if host:
+    if settings.demo_mode:
+        _LOGGER.info("Demo mode enabled — using mock receiver (no real AVR needed)")
+        await app_state.start_demo()
+    elif host:
         _LOGGER.info("Connecting to configured host %s...", host)
         await app_state.connect_to_host(host)
         # Preload radio stations in background
@@ -85,6 +127,16 @@ async def lifespan(app: FastAPI):
         bg_task = asyncio.create_task(preload_radio_stations())
     else:
         bg_task = asyncio.create_task(_auto_discover_and_connect())
+
+    android_tv_host = settings.android_tv_host or app_state.android_tv.load_last_host()
+    if android_tv_host:
+        _LOGGER.info("Connecting to Android TV host %s...", android_tv_host)
+        await app_state.android_tv.connect(android_tv_host)
+
+    adb_last_host = app_state.android_adb.load_last_host()
+    if settings.android_tv_adb_enabled and (adb_last_host or android_tv_host):
+        adb_host, adb_port = adb_last_host or (android_tv_host, settings.android_tv_adb_port)
+        adb_task = asyncio.create_task(_auto_connect_adb(adb_host, adb_port))
 
     yield
 
@@ -95,10 +147,18 @@ async def lifespan(app: FastAPI):
             await bg_task
         except asyncio.CancelledError:
             pass
+    if adb_task and not adb_task.done():
+        adb_task.cancel()
+        try:
+            await adb_task
+        except asyncio.CancelledError:
+            pass
     if app_state.heos:
         await app_state.heos.disconnect()
     if app_state.telnet:
         await app_state.telnet.disconnect()
+    await app_state.android_tv.disconnect()
+    await app_state.android_adb.disconnect()
 
 
 # ---- App ----
@@ -122,7 +182,7 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "img-src 'self' http: https:; "
+            "img-src 'self' blob: data: http: https:; "
             "style-src 'self' 'unsafe-inline'; "
             "script-src 'self'; "
             "connect-src 'self' ws: wss:; "
@@ -149,6 +209,7 @@ app.include_router(audio.router)
 app.include_router(zone2.router)
 app.include_router(media.router)
 app.include_router(status.router)
+app.include_router(androidtv.router)
 
 
 # ---- WebSocket ----
@@ -173,8 +234,7 @@ async def websocket_endpoint(ws: WebSocket):
     _LOGGER.info("WebSocket client connected (%d total)", len(app_state.ws_clients))
     try:
         # Send current state immediately
-        if app_state.telnet:
-            await ws.send_text(json.dumps(app_state.build_status()))
+        await ws.send_text(json.dumps(app_state.build_status()))
 
         # Per-client rate limiting state
         msg_times: list[float] = []

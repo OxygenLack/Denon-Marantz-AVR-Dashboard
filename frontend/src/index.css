@@ -2,30 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Theme CSS variables (overridden at runtime by theme.js) ── */
+/* ── Theme CSS variables (overridden at runtime by applyThemeConfig) ── */
 :root {
   --accent:     #C5A55A;
   --accent-dim: #a08840;
+  --bg:         #0D0D0D;
+  --card:       #1A1A1A;
+  --surface:    #242424;
+  --border:     #333333;
+  --text:       #E5E5E5;
+  --muted:      #888888;
+
+  /* ── Responsive Remote Sizing & Variables ── */
+  --dpad-size: 18rem;
+  --dpad-up-down-w: 6rem;
+  --dpad-up-down-h: 4rem;
+  --dpad-left-right-w: 4rem;
+  --dpad-left-right-h: 6rem;
+  --dpad-ok-size: 7rem;
+  --dpad-offset: 1rem;
+  --dpad-ok-font: 1.5rem;
+  --knob-height: 12rem;
+  --row-height: 3rem;
+  --media-row-height: 3.5rem;
+  --remote-gap: 1.25rem;
+  --remote-card-padding: 1.25rem;
+  --app-pb: 6rem;
 }
 
 @layer base {
   * {
     -webkit-tap-highlight-color: transparent;
   }
+  button, input, select {
+    touch-action: manipulation;
+  }
   body {
     @apply min-h-screen bg-denon-dark;
     background-image: radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--accent) 5%, transparent) 0%, transparent 60%);
+    padding-top: env(safe-area-inset-top, 0px);
   }
 }
 
 @layer components {
   .card {
-    @apply bg-denon-card/80 backdrop-blur-sm rounded-2xl border border-denon-border/50 p-5
-           shadow-lg shadow-black/10;
+    @apply rounded-2xl border p-5 shadow-lg shadow-black/10;
+    background-color: var(--card);
+    border-color: color-mix(in srgb, var(--border) 50%, transparent);
   }
   .btn {
     @apply px-4 py-2 rounded-xl font-medium transition-all duration-150
-           active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed;
+           disabled:opacity-40 disabled:cursor-not-allowed;
   }
   .btn-primary {
     @apply btn text-denon-dark hover:brightness-110;
@@ -33,7 +60,8 @@
     box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 25%, transparent);
   }
   .btn-ghost {
-    @apply btn bg-denon-surface/70 text-denon-text hover:bg-denon-border;
+    @apply btn text-denon-text hover:bg-denon-border;
+    background-color: color-mix(in srgb, var(--surface) 70%, transparent);
   }
   .btn-danger {
     @apply btn bg-denon-red/20 text-denon-red hover:bg-denon-red/30;
@@ -64,7 +92,7 @@ input[type="range"] {
 input[type="range"]::-webkit-slider-thumb {
   @apply appearance-none w-5 h-5 rounded-full shadow-lg cursor-grab active:cursor-grabbing;
   background: linear-gradient(135deg, var(--accent), var(--accent-dim));
-  border: 2px solid #0D0D0D;
+  border: 2px solid var(--bg);
   margin-top: -7px; /* center 20px thumb on 6px track (WebKit doesn't auto-center) */
 }
 input[type="range"]::-moz-range-thumb {
@@ -75,21 +103,180 @@ input[type="range"]::-webkit-slider-runnable-track {
   @apply h-1.5 rounded-full;
 }
 
-/* Smooth transitions */
-.fade-in {
-  animation: fadeIn 0.2s ease-out;
-}
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+/* Larger touch targets for sliders on touch devices */
+@media (hover: none) and (pointer: coarse) {
+  input[type="range"] {
+    @apply h-2;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    @apply w-7 h-7;
+    margin-top: -10px;
+  }
+  input[type="range"]::-moz-range-thumb {
+    @apply w-7 h-7;
+  }
 }
 
 /* Select styling */
 select {
-  @apply bg-denon-surface text-denon-text text-xs rounded-lg px-2 py-1.5 border border-denon-border/50
+  @apply bg-denon-surface text-denon-text text-xs rounded-lg px-2 py-1.5 border
          appearance-none cursor-pointer;
+  border-color: color-mix(in srgb, var(--border) 50%, transparent);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 8px center;
   padding-right: 24px;
+}
+
+/* ── Responsive Remote Sizing Overrides ── */
+@media (max-height: 780px) {
+  :root {
+    --dpad-size: 14.5rem;
+    --dpad-up-down-w: 5rem;
+    --dpad-up-down-h: 3rem;
+    --dpad-left-right-w: 3rem;
+    --dpad-left-right-h: 5rem;
+    --dpad-ok-size: 6rem;
+    --dpad-offset: 0.5rem;
+    --dpad-ok-font: 1.25rem;
+    --knob-height: 9rem;
+    --row-height: 2.5rem;
+    --media-row-height: 2.75rem;
+    --remote-gap: 0.75rem;
+    --remote-card-padding: 0.875rem;
+  }
+}
+
+@media (max-height: 700px) {
+  :root {
+    --dpad-size: 13rem;
+    --dpad-up-down-w: 4.5rem;
+    --dpad-up-down-h: 2.5rem;
+    --dpad-left-right-w: 2.5rem;
+    --dpad-left-right-h: 4.5rem;
+    --dpad-ok-size: 5rem;
+    --dpad-offset: 0.35rem;
+    --dpad-ok-font: 1.1rem;
+    --knob-height: 8.5rem;
+    --row-height: 2.25rem;
+    --media-row-height: 2.5rem;
+    --remote-gap: 0.5rem;
+    --remote-card-padding: 0.625rem;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --app-pb: 5.5rem;
+  }
+  @media (max-height: 780px) {
+    :root {
+      --app-pb: 4.75rem;
+    }
+  }
+  @media (max-height: 700px) {
+    :root {
+      --app-pb: 4.25rem;
+    }
+  }
+}
+
+.app-container {
+  padding-bottom: var(--app-pb);
+}
+@media (min-width: 640px) {
+  .app-container {
+    padding-bottom: 2rem !important;
+  }
+}
+
+.status-bar-container {
+  padding-top: 1.25rem;
+  padding-bottom: 0.75rem;
+}
+@media (max-height: 780px) {
+  .status-bar-container {
+    padding-top: 0.75rem;
+    padding-bottom: 0.35rem;
+  }
+}
+@media (max-height: 700px) {
+  .status-bar-container {
+    padding-top: 0.5rem;
+    padding-bottom: 0.25rem;
+  }
+}
+
+.remote-card-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--remote-gap) !important;
+  padding: var(--remote-card-padding) !important;
+}
+
+.dpad-container {
+  width: var(--dpad-size) !important;
+}
+
+.dpad-btn-up {
+  top: var(--dpad-offset) !important;
+  width: var(--dpad-up-down-w) !important;
+  height: var(--dpad-up-down-h) !important;
+}
+
+.dpad-btn-down {
+  bottom: var(--dpad-offset) !important;
+  width: var(--dpad-up-down-w) !important;
+  height: var(--dpad-up-down-h) !important;
+}
+
+.dpad-btn-left {
+  left: var(--dpad-offset) !important;
+  width: var(--dpad-left-right-w) !important;
+  height: var(--dpad-left-right-h) !important;
+}
+
+.dpad-btn-right {
+  right: var(--dpad-offset) !important;
+  width: var(--dpad-left-right-w) !important;
+  height: var(--dpad-left-right-h) !important;
+}
+
+.dpad-btn-ok {
+  width: var(--dpad-ok-size) !important;
+  height: var(--dpad-ok-size) !important;
+  font-size: var(--dpad-ok-font) !important;
+}
+
+.remote-knob {
+  height: var(--knob-height) !important;
+}
+
+.remote-row-btn {
+  height: var(--row-height) !important;
+}
+
+.remote-media-btn {
+  height: var(--media-row-height) !important;
+}
+
+.remote-text-input {
+  height: var(--row-height) !important;
+}
+
+.dpad-container svg {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+@media (max-height: 780px) {
+  .dpad-container svg {
+    width: 2rem;
+    height: 2rem;
+  }
+}
+@media (max-height: 700px) {
+  .dpad-container svg {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
 }

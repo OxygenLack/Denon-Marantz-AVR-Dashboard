@@ -6,3 +6,6 @@ pydantic==2.11.1
 pydantic-settings==2.9.1
 defusedxml==0.7.1
 httpx==0.28.1
+androidtvremote2==0.3.1
+zeroconf==0.147.2
+Pillow==12.0.0

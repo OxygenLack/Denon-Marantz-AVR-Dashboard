@@ -7,6 +7,7 @@ TELNET_TIMEOUT = 5.0
 TELNET_RECONNECT_DELAY = 10
 TELNET_MAX_RECONNECT = 0  # unlimited
 TELNET_HEARTBEAT_INTERVAL = 30
+TELNET_FEEDBACK_POLL_INTERVAL = 2.0
 COMMAND_INTERVAL = 0.05  # 50ms between commands per protocol spec
 
 # Strict allowlist for raw telnet commands (shared by telnet_client and WebSocket handler)

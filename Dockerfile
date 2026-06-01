@@ -16,6 +16,10 @@ WORKDIR /app
 
 # Create non-root user
 RUN useradd -r -s /bin/false appuser
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends android-tools-adb \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /data/androidtv /data/adb && chown -R appuser /data
 
 # Install Python dependencies
 COPY backend/requirements.txt .

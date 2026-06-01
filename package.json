@@ -1,0 +1,14 @@
+{
+  "name": "denon-dashboard-dev",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "demo": "concurrently -n backend,frontend -c blue,green \"npm run demo:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && python -m uvicorn main:app --reload --port 8080",
+    "demo:backend": "cd backend && DENON_DASHBOARD_DEMO_MODE=true python -m uvicorn main:app --reload --port 8080",
+    "dev:frontend": "cd frontend && npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

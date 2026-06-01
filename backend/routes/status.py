@@ -10,8 +10,11 @@ from api.models import (
     CommandRequest,
     DeviceInfoResponse,
     HealthResponse,
+    PreferencesResponse,
     StatusResponse,
+    ThemeConfig,
 )
+from preferences import load_preferences, save_preferences
 from config import settings
 from denon.const import CHANNEL_NAMES, DEFAULT_SOURCES, HEOS_SOURCES
 from denon.discovery import discover_receivers
@@ -174,6 +177,27 @@ async def raw_command(req: CommandRequest):
     ok = await app_state.telnet.send(req.command)
     if not ok:
         raise HTTPException(502, "Failed to send command")
+    return {"ok": True}
+
+
+@router.get("/preferences", response_model=PreferencesResponse)
+async def get_preferences():
+    """Return current user preferences (theme config)."""
+    prefs = load_preferences()
+    return PreferencesResponse(theme=ThemeConfig(**prefs.get("theme", {})))
+
+
+@router.post("/preferences/theme")
+async def save_theme(req: ThemeConfig):
+    """Save theme config server-side and broadcast to all connected WebSocket clients."""
+    prefs = load_preferences()
+    prefs["theme"] = req.model_dump()
+    try:
+        save_preferences(prefs)
+    except Exception:
+        raise HTTPException(500, "Failed to save preferences — check that the /data volume is mounted")
+    app_state.theme_config = req.model_dump()
+    await app_state.broadcast_state()
     return {"ok": True}
 
 

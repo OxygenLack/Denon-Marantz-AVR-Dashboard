@@ -18,6 +18,7 @@ from .const import (
     SURROUND_CATEGORIES,
     SWL_0DB,
     TELNET_HEARTBEAT_INTERVAL,
+    TELNET_FEEDBACK_POLL_INTERVAL,
     TELNET_MAX_RECONNECT,
     TELNET_RECONNECT_DELAY,
     TELNET_TIMEOUT,
@@ -47,9 +48,11 @@ class DenonTelnetClient:
         self._connected = False
         self._listen_task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
+        self._feedback_poll_task: asyncio.Task | None = None
         self._reconnect_task: asyncio.Task | None = None
         self._shutting_down = False
         self._reconnecting = False
+        self._send_lock = asyncio.Lock()
 
         # state
         self.state: dict[str, Any] = {
@@ -113,6 +116,7 @@ class DenonTelnetClient:
 
             self._listen_task = asyncio.create_task(self._listen())
             self._heartbeat_task = asyncio.create_task(self._heartbeat())
+            self._feedback_poll_task = asyncio.create_task(self._feedback_poll())
 
             # initial status poll
             await self._poll_status()
@@ -124,7 +128,12 @@ class DenonTelnetClient:
     async def disconnect(self) -> None:
         self._shutting_down = True
         self._connected = False
-        for task in (self._listen_task, self._heartbeat_task, self._reconnect_task):
+        for task in (
+            self._listen_task,
+            self._heartbeat_task,
+            self._feedback_poll_task,
+            self._reconnect_task,
+        ):
             if task:
                 task.cancel()
                 try:
@@ -150,9 +159,13 @@ class DenonTelnetClient:
             _LOGGER.warning("Not connected, cannot send: %s", command)
             return False
         try:
-            self._writer.write(f"{command}\r".encode())
-            await self._writer.drain()
-            await asyncio.sleep(COMMAND_INTERVAL)
+            async with self._send_lock:
+                if not self._connected or not self._writer:
+                    _LOGGER.warning("Not connected, cannot send: %s", command)
+                    return False
+                self._writer.write(f"{command}\r".encode())
+                await self._writer.drain()
+                await asyncio.sleep(COMMAND_INTERVAL)
             return True
         except Exception as exc:
             _LOGGER.error("Send failed (%s): %s", command, exc)
@@ -217,6 +230,22 @@ class DenonTelnetClient:
             except Exception:
                 break
 
+    async def _feedback_poll(self) -> None:
+        """Poll fast-changing controls that some receivers do not push unsolicited."""
+        cmds = ("MV?", "MU?")
+        while self._connected:
+            try:
+                await asyncio.sleep(TELNET_FEEDBACK_POLL_INTERVAL)
+                if not self._connected:
+                    return
+                for cmd in cmds:
+                    await self.send(cmd)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _LOGGER.debug("Feedback poll error: %s", exc)
+                return
+
     async def _handle_disconnect(self) -> None:
         if not self._connected and not self._shutting_down:
             return
@@ -267,7 +296,7 @@ class DenonTelnetClient:
         # Master volume
         elif line.startswith("MV") and not line.startswith("MVMAX"):
             vol = self._parse_volume(line[2:])
-            if vol is not None:
+            if vol is not None and self.state.get("volume") != vol:
                 self.state["volume"] = vol; changed = True
         elif line.startswith("MVMAX"):
             vol = self._parse_volume(line[5:])
@@ -276,9 +305,11 @@ class DenonTelnetClient:
 
         # Mute
         elif line == "MUON":
-            self.state["muted"] = True; changed = True
+            if self.state.get("muted") is not True:
+                self.state["muted"] = True; changed = True
         elif line == "MUOFF":
-            self.state["muted"] = False; changed = True
+            if self.state.get("muted") is not False:
+                self.state["muted"] = False; changed = True
 
         # Source
         elif line.startswith("SI"):

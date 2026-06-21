@@ -1,0 +1,28 @@
+{
+  "name": "Denon Dashboard",
+  "short_name": "Denon",
+  "description": "Control your Denon/Marantz AVR receiver",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0D0D0D",
+  "theme_color": "#C5A55A",
+  "icons": [
+    {
+      "src": "/denon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

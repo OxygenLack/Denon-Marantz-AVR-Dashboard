@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import ThemePicker from './ThemePicker'
+import NightModeButton from './NightModeButton'
 
-export default function StatusBar({ deviceName, state, wsConnected, receiverIp, currentTheme, onThemeChange }) {
+export default function StatusBar({ deviceName, state, info, post, wsConnected, wsConnecting, receiverIp, currentTheme, onThemeChange, onNightModeConfigChange }) {
   const [expanded, setExpanded] = useState(false)
   const telnetOk = state?.connected
   const power = state?.power
-  const ok = telnetOk && wsConnected
+  const ok = telnetOk && (wsConnected || wsConnecting)
 
   return (
     <div className="pt-5 pb-3">
@@ -17,9 +18,10 @@ export default function StatusBar({ deviceName, state, wsConnected, receiverIp, 
             className={`${ok ? 'badge-green' : 'badge-red'} cursor-pointer hover:brightness-110 transition-all`}
           >
             <span className={`w-2 h-2 rounded-full ${ok ? 'bg-denon-green animate-pulse' : 'bg-denon-red'}`} />
-            {ok ? 'Connected' : 'Disconnected'}
+            {telnetOk ? (wsConnected ? 'Connected' : wsConnecting ? 'Connecting' : 'Connected') : 'Disconnected'}
             <svg className={`w-3 h-3 transition-transform ${expanded ? 'rotate-180' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
           </button>
+          <NightModeButton state={state} info={info} post={post} onConfigChange={onNightModeConfigChange} />
           <ThemePicker currentTheme={currentTheme} onThemeChange={onThemeChange} />
         </div>
       </div>
@@ -38,8 +40,8 @@ export default function StatusBar({ deviceName, state, wsConnected, receiverIp, 
           </div>
           <div className="flex justify-between">
             <span className="text-denon-muted">WebSocket</span>
-            <span className={wsConnected ? 'text-denon-green' : 'text-denon-red'}>
-              {wsConnected ? '● Connected' : '● Disconnected'}
+            <span className={wsConnected ? 'text-denon-green' : wsConnecting ? 'text-denon-gold' : 'text-denon-muted'}>
+              {wsConnected ? '● Connected' : wsConnecting ? '● Connecting' : '● HTTP fallback'}
             </span>
           </div>
           <div className="flex justify-between">

@@ -19,5 +19,12 @@ export function useDeviceInfo() {
       .catch(() => {})
   }
 
-  return { info, loading, refresh }
+  const reload = () => {
+    fetch('/api/v1/device')
+      .then(r => r.json())
+      .then(data => setInfo(data))
+      .catch(() => {})
+  }
+
+  return { info, loading, refresh, reload }
 }

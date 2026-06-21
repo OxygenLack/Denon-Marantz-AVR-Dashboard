@@ -15,6 +15,7 @@ export default function PowerControl({ state, sendCommand, zone = 'main' }) {
       </div>
       <button
         onClick={() => sendCommand(power ? offCmd : onCmd)}
+        aria-label={power ? `Turn ${zone === 'main' ? 'main zone' : 'Zone 2'} off` : `Turn ${zone === 'main' ? 'main zone' : 'Zone 2'} on`}
         className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all duration-200 ${
           power
             ? 'bg-gradient-to-br from-denon-gold to-amber-600 text-denon-dark shadow-lg shadow-denon-gold/30'

@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     # UI theme: gold (default), blue, red, green, olive, violet, purple, pink, orange
     theme: str = "gold"
 
+    # Local timezone and time display format for schedules
+    timezone: str = "Europe/Berlin"
+    time_format: str = "auto"  # auto, 24h, 12h
+
+    # Optional UI experience effects
+    ui_ambient_background: bool = True
+    ui_seasonal_effects: str = "auto"  # auto, off, winter, christmas, halloween
+    ui_shortcut_overlay: bool = True
+    ui_card_animations: bool = True
+    ui_ambient_intensity: float = 1.0
+
     # CORS allowed origins (comma-separated). Empty = no CORS headers (same-origin only).
     cors_origins: str = ""
 

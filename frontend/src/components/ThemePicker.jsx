@@ -15,10 +15,19 @@ export default function ThemePicker({ currentTheme, onThemeChange }) {
     return () => document.removeEventListener('pointerdown', handler)
   }, [open])
 
-  const handlePick = (name) => {
+  const handlePick = async (name) => {
     setTheme(name)
     onThemeChange(name)
     setOpen(false)
+    try {
+      await fetch('/api/v1/ui-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ theme: name }),
+      })
+    } catch (err) {
+      console.warn('Could not persist theme:', err)
+    }
   }
 
   return (

@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # -- Request models --
@@ -34,9 +35,65 @@ class SubwooferLevelRequest(BaseModel):
     index: int = Field(1, ge=1, le=2, description="Subwoofer 1 or 2")
 
 
+class NightModeChannel(BaseModel):
+    channel: str = Field(..., pattern=r"^[A-Z0-9]{1,4}$",
+                         description="Channel code (FL, FR, C, SW, etc.)")
+    mode: Literal["absolute", "offset"]
+    value: int = Field(..., description="Absolute target (38–62) or offset in CV steps")
+
+
+class NightModeRequest(BaseModel):
+    enabled: bool
+    channels: list[NightModeChannel] = []
+
+
+class NightModeSchedule(BaseModel):
+    enabled: bool = False
+    days: list[Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]] = []
+    start: str = Field("22:00", pattern=r"^\d{2}:\d{2}$")
+    end: str = Field("02:00", pattern=r"^\d{2}:\d{2}$")
+    timezone: str = "Europe/Berlin"
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+            return v
+        except Exception:
+            raise ValueError(f"Invalid timezone: {v}")
+
+
+class NightModeConfigRequest(BaseModel):
+    mode: Literal["absolute", "offset"] = "offset"
+    schedule: NightModeSchedule = NightModeSchedule()
+    channels: list[NightModeChannel] = []
+
+
 class SourceRequest(BaseModel):
     source: str = Field(..., pattern=r"^[A-Z0-9/]{1,10}$",
                         description="Source command code (e.g. 'GAME', 'BD', 'TV')")
+
+
+class SourceNameRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50,
+                      description="Custom display name for an input source")
+
+    @field_validator("name")
+    @classmethod
+    def _strip_control_chars(cls, v: str) -> str:
+        cleaned = "".join(c for c in v if c == "\t" or (ord(c) >= 0x20 and c != "\x7f"))
+        cleaned = cleaned.strip()
+        if not cleaned:
+            raise ValueError("name must contain printable characters")
+        return cleaned
+
+
+class RadioFavoriteRequest(BaseModel):
+    mid: str = Field(..., min_length=1, max_length=500, pattern=r"^[^\r\n]+$")
+    name: str = Field(..., min_length=1, max_length=120)
+    image_url: str | None = Field(None, max_length=1000)
+    station: str | None = Field(None, max_length=120)
 
 
 class SurroundRequest(BaseModel):
@@ -96,10 +153,13 @@ class StatusResponse(BaseModel):
     dynamic_volume: str | None = None
     ref_level_offset: int | None = None
     sleep_timer: int | None = None
+    night_mode_enabled: bool = False
+    night_mode_snapshot: dict[str, int] = {}
     eco_mode: str | None = None
     z2_power: bool | None = None
     z2_volume: int | None = None
     z2_muted: bool | None = None
+    z2_sleep_timer: int | None = None
     z2_source: str | None = None
     z2_source_name: str | None = None
     speaker_calibration: dict[str, float] = {}
@@ -108,16 +168,49 @@ class StatusResponse(BaseModel):
     stream_quality: str | None = None
 
 
+class TimeSettingsResponse(BaseModel):
+    timezone: str = "Europe/Berlin"
+    time_format: Literal["auto", "24h", "12h"] = "auto"
+
+
+class UiSettingsResponse(BaseModel):
+    theme: str | None = None
+
+
+class UiSettingsRequest(BaseModel):
+    theme: str | None = None
+
+
+class UiEffectsResponse(BaseModel):
+    ambient_background: bool = True
+    seasonal_effects: str = "auto"
+    shortcut_overlay: bool = True
+    card_animations: bool = True
+    ambient_intensity: float = 1.0
+
+
+class RadioFavoriteResponse(BaseModel):
+    mid: str
+    name: str
+    image_url: str | None = None
+    station: str | None = None
+
+
 class DeviceInfoResponse(BaseModel):
     device_name: str = "Denon AVR"
     zone1_name: str = "Main Zone"
     zone2_name: str = "Zone 2"
     sources: list[dict[str, str]] = []
     source_name_map: dict[str, str] = {}
+    source_name_overrides: dict[str, str] = {}
     channel_volumes: dict[str, int] = {}
     channel_names: dict[str, str] = {}
     receiver_ip: str | None = None
     theme: str = "gold"
+    ui_effects: UiEffectsResponse = UiEffectsResponse()
+    time_settings: TimeSettingsResponse = TimeSettingsResponse()
+    night_mode_config: dict[str, Any] = {"channels": []}
+    radio_favorites: list[RadioFavoriteResponse] = []
 
 
 class HealthResponse(BaseModel):

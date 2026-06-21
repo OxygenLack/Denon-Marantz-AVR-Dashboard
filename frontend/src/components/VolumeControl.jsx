@@ -68,6 +68,7 @@ export default function VolumeControl({ state, sendCommand, post }) {
       </div>
       <input
         type="range"
+        aria-label="Main zone volume"
         min={0} max={Math.min(volumeMax, 98)} step={0.5}
         value={displayVol ?? 0}
         onChange={handleChange}

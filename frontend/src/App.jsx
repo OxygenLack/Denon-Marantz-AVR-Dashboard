@@ -4,6 +4,8 @@ import { useWebSocket } from './hooks/useWebSocket'
 import ReceiverSetup from './components/ReceiverSetup'
 import { useDeviceInfo } from './hooks/useDeviceInfo'
 import { useApi } from './hooks/useApi'
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useForegroundEffects } from './hooks/useForegroundEffects'
 import StatusBar from './components/StatusBar'
 import PowerControl from './components/PowerControl'
 import VolumeControl from './components/VolumeControl'
@@ -15,6 +17,10 @@ import SubwooferLevel from './components/SubwooferLevel'
 import AudioSettings from './components/AudioSettings'
 import MediaControls from './components/MediaControls'
 import Zone2Controls from './components/Zone2Controls'
+import CacheReset from './components/CacheReset'
+import AmbientBackground from './experience/AmbientBackground'
+import SeasonalEffects from './experience/SeasonalEffects'
+import ShortcutOverlay from './experience/ShortcutOverlay'
 
 // Fallback channel names if API hasn't loaded yet
 const FALLBACK_CHANNEL_NAMES = {
@@ -37,14 +43,17 @@ const MemoStatusBar = memo(StatusBar)
 const MemoMediaControls = memo(MediaControls)
 
 export default function App() {
-  const { state, wsConnected, sendCommand } = useWebSocket()
-  const { info } = useDeviceInfo()
+  const { state, wsConnected, wsConnecting, sendCommand } = useWebSocket()
+  const { info, reload: reloadDeviceInfo } = useDeviceInfo()
   const { post } = useApi()
   const [zone, setZone] = useState('main')
+  useForegroundEffects()
+  useKeyboardShortcuts({ state, post, sendCommand, zone, setZone })
   const [activeSection, setActiveSection] = useState('controls')
   const [currentTheme, setCurrentTheme] = useState('gold')
 
-  // Apply theme whenever device info loads, respecting localStorage override
+  // Apply theme whenever device info loads. Server-persisted theme is the default;
+  // localStorage remains a browser-local override for users who want it.
   useEffect(() => {
     const t = getTheme(info?.theme)
     applyTheme(t)
@@ -58,6 +67,7 @@ export default function App() {
         <div className="text-center">
           <div className="w-14 h-14 border-4 border-denon-gold/30 border-t-denon-gold rounded-full animate-spin mx-auto mb-4" />
           <p className="text-denon-muted text-sm">Connecting…</p>
+          <p className="text-denon-muted/50 text-xs mt-2">If this stays here, hard refresh once to clear old cached app files.</p>
         </div>
       </div>
     )
@@ -90,7 +100,7 @@ export default function App() {
   // Discovery finished but no receiver found — show setup screen
   if (!state.connected) {
     const reason = info?.receiver_ip === '0.0.0.0' ? 'no_host' : 'connect_failed'
-    return <ReceiverSetup discovering={info?.discovering} setReceiverIp={setManualIp} onConnect={connectToIp} currentTheme={currentTheme} onThemeChange={setCurrentTheme} />
+    return <ReceiverSetup reason={reason} onConnect={() => window.location.reload()} currentTheme={currentTheme} onThemeChange={setCurrentTheme} />
   }
 
   // Connected
@@ -101,7 +111,44 @@ export default function App() {
     ? info.channel_names
     : FALLBACK_CHANNEL_NAMES
   const sourceNameMap = info?.source_name_map || {}
+  const sourceNameOverrides = info?.source_name_overrides || {}
   const configuredSources = info?.sources || []
+  const radioFavorites = info?.radio_favorites || []
+  const uiEffects = info?.ui_effects || {}
+
+  const saveNightModeConfig = async (config) => {
+    const res = await fetch('/api/v1/night-mode/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    })
+    if (res.ok) reloadDeviceInfo()
+    else console.warn('Night mode config save failed', await res.text().catch(() => res.statusText))
+  }
+
+  const saveRadioFavorite = async (favorite, enabled) => {
+    const res = enabled
+      ? await fetch('/api/v1/media/radio/favorites', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(favorite),
+        })
+      : await fetch(`/api/v1/media/radio/favorites/${encodeURIComponent(favorite.mid)}`, { method: 'DELETE' })
+    if (res.ok) reloadDeviceInfo()
+    else console.warn('Radio favorite update failed', await res.text().catch(() => res.statusText))
+  }
+
+  const renameSource = async (code, name) => {
+    const res = name == null
+      ? await fetch(`/api/v1/source-names/${encodeURIComponent(code)}`, { method: 'DELETE' })
+      : await fetch(`/api/v1/source-names/${encodeURIComponent(code)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        })
+    if (res.ok) reloadDeviceInfo()
+    else console.warn('Source rename failed', await res.text().catch(() => res.statusText))
+  }
 
   const mainSections = [
     { id: 'controls', label: 'Controls' },
@@ -110,15 +157,26 @@ export default function App() {
   ]
 
   return (
-    <div className="max-w-2xl mx-auto px-4 pb-8 min-h-screen">
+    <>
+    {uiEffects.ambient_background !== false && (
+      <AmbientBackground state={state} intensity={uiEffects.ambient_intensity ?? 1} />
+    )}
+    <SeasonalEffects mode={uiEffects.seasonal_effects || 'auto'} />
+    {uiEffects.shortcut_overlay !== false && <ShortcutOverlay />}
+    <CacheReset />
+    <div className={`relative z-10 max-w-2xl mx-auto px-4 pb-8 min-h-screen ${uiEffects.card_animations === false ? 'no-card-animations' : ''}`}>
       {/* Header + Health */}
       <MemoStatusBar
         deviceName={deviceName}
         state={state}
         wsConnected={wsConnected}
+        wsConnecting={wsConnecting}
         receiverIp={info?.receiver_ip}
+        info={info}
+        post={post}
         currentTheme={currentTheme}
         onThemeChange={setCurrentTheme}
+        onNightModeConfigChange={saveNightModeConfig}
       />
 
       {/* Zone Selector */}
@@ -182,6 +240,10 @@ export default function App() {
                   sendCommand={sendCommand}
                   sources={configuredSources}
                   sourceNameMap={sourceNameMap}
+                  sourceNameOverrides={sourceNameOverrides}
+                  radioFavorites={radioFavorites}
+                  onRenameSource={renameSource}
+                  onRadioFavoriteChange={saveRadioFavorite}
                 />
                 <SurroundMode state={state} sendCommand={sendCommand} />
               </>
@@ -219,10 +281,15 @@ export default function App() {
             post={post}
             sources={configuredSources}
             sourceNameMap={sourceNameMap}
+            sourceNameOverrides={sourceNameOverrides}
+            radioFavorites={radioFavorites}
+            onRenameSource={renameSource}
+            onRadioFavoriteChange={saveRadioFavorite}
             zoneName={z2Name}
           />
         </div>
       )}
     </div>
+    </>
   )
 }

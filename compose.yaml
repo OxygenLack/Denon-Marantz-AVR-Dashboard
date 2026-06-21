@@ -1,6 +1,8 @@
 services:
   denon-dashboard:
-    image: ghcr.io/oxygenlack/denon-dashboard:latest
+    # Override IMAGE_TAG to pin a specific release (e.g. v1.2.3 or a commit SHA).
+    # The :latest default is convenient for first-time setup; pin in production.
+    image: ghcr.io/oxygenlack/denon-marantz-avr-dashboard:${IMAGE_TAG:-latest}
     container_name: denon-dashboard
     restart: unless-stopped
 

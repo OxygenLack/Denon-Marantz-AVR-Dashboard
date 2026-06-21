@@ -4,7 +4,8 @@
 DEFAULT_TELNET_PORT = 23
 DEFAULT_HTTP_PORT = 10443
 TELNET_TIMEOUT = 5.0
-TELNET_RECONNECT_DELAY = 10
+TELNET_RECONNECT_DELAY = 10  # initial delay; doubles up to TELNET_RECONNECT_MAX_DELAY
+TELNET_RECONNECT_MAX_DELAY = 300  # cap at 5 min so an offline AVR doesn't spam logs every 10s
 TELNET_MAX_RECONNECT = 0  # unlimited
 TELNET_HEARTBEAT_INTERVAL = 30
 COMMAND_INTERVAL = 0.05  # 50ms between commands per protocol spec
@@ -184,6 +185,6 @@ QUERY_COMMANDS = [
     "PSSWL ?", "PSDIL ?",
     "PSMULTEQ: ?", "PSDYNEQ ?", "PSDYNVOL ?",
     "PSREFLEV ?",
-    "Z2?", "Z2MU?",
+    "Z2?", "Z2MU?", "Z2SLP?",
     "SLP?", "ECO?",
 ]

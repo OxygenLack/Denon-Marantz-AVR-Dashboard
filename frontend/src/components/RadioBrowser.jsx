@@ -104,7 +104,7 @@ function safeImageUrl(url) {
   } catch { return null }
 }
 
-export default function RadioBrowser({ open, onClose }) {
+export default function RadioBrowser({ open, onClose, favorites = [], onFavoriteChange }) {
   const [navStack, setNavStack] = useState([]) // [{title, cid}]
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
@@ -156,6 +156,13 @@ export default function RadioBrowser({ open, onClose }) {
     setError(null)
     setItems([])
 
+    if (currentCid === '__favorites__') {
+      setItems(favorites.map(f => ({ ...f, playable: 'yes' })))
+      setLoading(false)
+      setError(null)
+      return
+    }
+
     const url = currentCid
       ? `/api/v1/media/radio/browse?cid=${encodeURIComponent(currentCid)}`
       : '/api/v1/media/radio/browse'
@@ -171,8 +178,11 @@ export default function RadioBrowser({ open, onClose }) {
       .then(data => {
         if (fetchIdRef.current !== id) return
         const fetched = data.items || []
-        cacheRef.current.set(cacheKey, fetched)
-        setItems(fetched)
+        const withFavorites = cacheKey === '__root__' && favorites.length > 0
+          ? [{ name: 'Favorites', container: 'yes', cid: '__favorites__' }, ...fetched]
+          : fetched
+        cacheRef.current.set(cacheKey, withFavorites)
+        setItems(withFavorites)
         setLoading(false)
       })
       .catch(err => {
@@ -190,7 +200,7 @@ export default function RadioBrowser({ open, onClose }) {
     return () => {
       controller.abort()
     }
-  }, [open, cacheKey, retryCount])
+  }, [open, cacheKey, retryCount, favorites])
 
   // Escape key handler
   useEffect(() => {
@@ -213,6 +223,22 @@ export default function RadioBrowser({ open, onClose }) {
       setClosing(false)
       onClose()
     }, 150)
+  }
+
+  const isFavorite = (item) => Boolean(item?.mid && favorites.some(f => f.mid === item.mid))
+
+  const toggleFavorite = async (item) => {
+    if (!item?.mid) return
+    if (isFavorite(item)) {
+      await onFavoriteChange?.(item, false)
+    } else {
+      await onFavoriteChange?.({
+        mid: item.mid,
+        name: decodeLabel(item.name) || item.station || item.mid,
+        image_url: item.image_url || null,
+        station: item.station || null,
+      }, true)
+    }
   }
 
   const handleItemClick = async (item) => {
@@ -324,7 +350,7 @@ export default function RadioBrowser({ open, onClose }) {
       />
 
       {/* Modal */}
-      <div className={`fixed inset-2 sm:inset-auto sm:top-4 sm:bottom-4 sm:left-1/2 sm:-translate-x-1/2 sm:w-full sm:max-w-2xl
+      <div data-modal="radio" className={`fixed inset-2 sm:inset-auto sm:top-4 sm:bottom-4 sm:left-1/2 sm:-translate-x-1/2 sm:w-full sm:max-w-2xl
         bg-denon-dark rounded-2xl z-50 flex flex-col overflow-hidden
         border border-denon-accent/40 shadow-2xl shadow-black/50
         transition-all duration-200 ease-out ${animClass}`}
@@ -469,6 +495,7 @@ export default function RadioBrowser({ open, onClose }) {
                 const label = decodeLabel(item.name)
                 const isContainer = item.container === 'yes'
                 const isPlaying = playingMid === item.mid
+                const fav = isFavorite(item)
                 const img = safeImageUrl(item.image_url)
 
                 if (isTopLevel && !isSearching && isContainer) {
@@ -512,6 +539,15 @@ export default function RadioBrowser({ open, onClose }) {
                       <svg className="w-4 h-4 text-denon-muted shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <path d="M9 18l6-6-6-6" />
                       </svg>
+                    )}
+                    {item.playable === 'yes' && item.mid && (
+                      <span
+                        onClick={(e) => { e.stopPropagation(); toggleFavorite(item) }}
+                        className={`px-2 py-1 rounded-lg text-sm shrink-0 ${fav ? 'text-denon-gold bg-denon-gold/10' : 'text-denon-muted hover:text-denon-gold hover:bg-denon-surface'}`}
+                        title={fav ? 'Remove favorite' : 'Add favorite'}
+                      >
+                        {fav ? '★' : '☆'}
+                      </span>
                     )}
                     {isPlaying && (
                       <span className="w-2 h-2 rounded-full bg-denon-gold shrink-0 animate-pulse" />

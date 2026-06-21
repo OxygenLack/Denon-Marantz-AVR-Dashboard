@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, Callable, Coroutine
 
 _LOGGER = logging.getLogger("denon.heos_client")
 
@@ -21,14 +21,26 @@ class HeosClient:
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
         self._pid: int | None = None
+        self._listen_task: asyncio.Task | None = None
+        self._pending_commands: list[tuple[str, asyncio.Future]] = []
+        self._callbacks: list[Callable[[dict[str, Any]], Coroutine]] = []
+
+    def on_event(self, cb: Callable[[dict[str, Any]], Coroutine]) -> None:
+        """Register a callback for unsolicited HEOS events."""
+        self._callbacks.append(cb)
 
     async def connect(self) -> None:
         """Connect and discover player ID."""
         try:
+            # Use limit=102400 to prevent DoS from excessively long lines
             self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self._host, self._port), timeout=5
+                asyncio.open_connection(self._host, self._port, limit=102400), timeout=5
             )
             _LOGGER.info("HEOS connected to %s:%s", self._host, self._port)
+            
+            # Start background reader
+            self._listen_task = asyncio.create_task(self._listen())
+            
             # Discover player
             resp = await self._command("player/get_players")
             if resp and "payload" in resp:
@@ -36,12 +48,23 @@ class HeosClient:
                     self._pid = p.get("pid")
                     _LOGGER.info("HEOS player: %s (pid=%s)", p.get("name"), self._pid)
                     break
+                    
+            # Enable change events
+            await self._command("system/register_for_change_events", "enable=on")
         except Exception as exc:
             _LOGGER.warning("HEOS connection failed: %s", exc)
-            self._reader = None
-            self._writer = None
+            await self.disconnect()
 
     async def disconnect(self) -> None:
+        if self._listen_task:
+            self._listen_task.cancel()
+            self._listen_task = None
+            
+        for _, fut in self._pending_commands:
+            if not fut.done():
+                fut.cancel()
+        self._pending_commands.clear()
+        
         if self._writer:
             try:
                 self._writer.close()
@@ -59,37 +82,86 @@ class HeosClient:
     def player_id(self) -> int | None:
         return self._pid
 
-    async def _command(self, cmd: str, params: str = "") -> dict[str, Any] | None:
-        """Send a HEOS command and return parsed JSON response."""
+    async def _listen(self) -> None:
+        """Background task to read HEOS stream."""
+        try:
+            while self.connected and self._reader:
+                try:
+                    line = await self._reader.readline()
+                    if not line:
+                        break
+                    
+                    data = json.loads(line.decode().strip())
+                    _LOGGER.debug("HEOS RX: %s", data)
+                    
+                    heos = data.get("heos", {})
+                    cmd = heos.get("command", "")
+                    msg = heos.get("message", "")
+                    
+                    # Unsolicited events
+                    if "event" in cmd or cmd in ("player/state_changed", "player/now_playing_changed", "player/now_playing_progress"):
+                        for cb in self._callbacks:
+                            try:
+                                await cb(data)
+                            except Exception as exc:
+                                _LOGGER.error("HEOS callback error: %s", exc)
+                        continue
+                        
+                    # Ignore "command under process" intermediate responses
+                    if "command under process" in msg:
+                        continue
+                        
+                    # Resolve pending commands
+                    for i, (p_cmd, fut) in enumerate(self._pending_commands):
+                        if cmd == p_cmd and not fut.done():
+                            fut.set_result(data)
+                            self._pending_commands.pop(i)
+                            break
+                            
+                except ValueError as exc:
+                    _LOGGER.warning("HEOS buffer limit exceeded (DoS prevention): %s", exc)
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            _LOGGER.warning("HEOS listen error: %s", exc)
+        finally:
+            await self.disconnect()
+
+    async def _command(self, cmd: str, params: str = "", timeout: float = 8.0) -> dict[str, Any] | None:
+        """Send a HEOS command and wait for parsed JSON response via the event loop."""
         async with self._lock:
-            if not self._writer or self._writer.is_closing():
+            if not self.connected:
                 await self._reconnect()
-                if not self._writer:
+                if not self.connected:
                     return None
+                    
             try:
                 url = f"heos://{cmd}"
                 if params:
                     url += f"?{params}"
-                self._writer.write(f"{url}\r\n".encode())
+                    
+                fut = asyncio.get_running_loop().create_future()
+                self._pending_commands.append((cmd, fut))
+                
+                _LOGGER.debug("HEOS TX: %s", url)
+                self._writer.write(f"{url}\\r\\n".encode())
                 await self._writer.drain()
-
-                line = await asyncio.wait_for(self._reader.readline(), timeout=5)
-                data = json.loads(line.decode().strip())
-                _LOGGER.debug("HEOS RX: %s", data)
-                return data
             except Exception as exc:
-                _LOGGER.warning("HEOS command error (%s): %s", cmd, exc)
+                _LOGGER.warning("HEOS command send error (%s): %s", cmd, exc)
                 await self.disconnect()
                 return None
+                
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            _LOGGER.warning("HEOS command timeout: %s", cmd)
+            self._pending_commands = [(c, f) for c, f in self._pending_commands if f != fut]
+            return None
 
     async def _reconnect(self) -> None:
-        try:
-            self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self._host, self._port), timeout=5
-            )
-            _LOGGER.info("HEOS reconnected")
-        except Exception as exc:
-            _LOGGER.warning("HEOS reconnect failed: %s", exc)
+        await self.disconnect()
+        await self.connect()
 
     def _pid_param(self) -> str:
         return f"pid={self._pid}" if self._pid else ""
@@ -141,59 +213,24 @@ class HeosClient:
     async def browse_source(self, sid: int, cid: str | None = None) -> dict[str, Any]:
         """Browse a HEOS music source. Returns {items, count, returned}."""
         empty = {"items": [], "count": 0, "returned": 0}
+        
         # Prevent HEOS command injection via cid parameter
-        if cid and ('\r' in cid or '\n' in cid or len(cid) > 1000):
+        if cid and ('\\r' in cid or '\\n' in cid or len(cid) > 1000):
             _LOGGER.warning("Invalid cid rejected (injection or length)")
             return {**empty, "_debug": "invalid_cid"}
+            
         params = f"sid={sid}"
         if cid:
             params += f"&cid={cid}"
 
-
-
-        async with self._lock:
-            if not self._writer or self._writer.is_closing():
-                _LOGGER.info("HEOS browse: reconnecting...")
-                await self._reconnect()
-                if not self._writer:
-                    _LOGGER.warning("HEOS browse: reconnect failed")
-                    return {**empty, "_debug": "reconnect_failed"}
-            try:
-                url = f"heos://browse/browse?{params}"
-                _LOGGER.info("HEOS TX: %s", url)
-                self._writer.write(f"{url}\r\n".encode())
-                await self._writer.drain()
-
-                # HEOS may return "command under process" first, then the actual data.
-                # It may also return responses from other commands (e.g. media poller).
-                # Read up to 5 lines looking for a browse/browse response with payload.
-                resp = None
-                debug_lines = []
-                for attempt in range(5):
-                    line = await asyncio.wait_for(self._reader.readline(), timeout=8)
-                    data = json.loads(line.decode().strip())
-                    _LOGGER.debug("HEOS RX [%d]: %s", attempt, data)
-                    cmd = data.get("heos", {}).get("command", "")
-                    result = data.get("heos", {}).get("result", "")
-                    msg = data.get("heos", {}).get("message", "")
-                    has_payload = "payload" in data
-                    debug_lines.append(f"[{attempt}] cmd={cmd} result={result} payload={'yes' if has_payload else 'no'} msg={msg[:80]}")
-                    if cmd == "browse/browse":
-                        if result == "fail":
-                            _LOGGER.warning("HEOS browse failed: %s", msg)
-                            return {**empty, "_debug": debug_lines}
-                        if has_payload:
-                            resp = data
-                            break
-                    # Skip non-browse responses (e.g. now_playing from media poller)
-                if resp is None:
-                    _LOGGER.warning("HEOS browse: no payload found in %d lines", len(debug_lines))
-                    return {**empty, "_debug": debug_lines}
-
-            except Exception as exc:
-                _LOGGER.warning("HEOS browse error: %s", exc)
-                await self.disconnect()
-                return {**empty, "_debug": f"exception: {exc}"}
+        resp = await self._command("browse/browse", params, timeout=10.0)
+        
+        if not resp:
+            return {**empty, "_debug": "timeout_or_error"}
+            
+        if resp.get("heos", {}).get("result") == "fail":
+            _LOGGER.warning("HEOS browse failed: %s", resp.get("heos", {}).get("message"))
+            return {**empty, "_debug": "fail"}
 
         # Parse count from message string
         msg = resp.get("heos", {}).get("message", "")
@@ -206,22 +243,27 @@ class HeosClient:
             elif part.startswith("returned="):
                 try: returned = int(part[9:])
                 except ValueError: pass
+                
         items = resp.get("payload") or []
         result = {"items": items, "count": count, "returned": returned}
+        
         if not items:
-            result["_debug"] = debug_lines
-            # Sanitize cid for logging to prevent log injection
-            safe_cid = (cid or "None").replace('\n', '\\n').replace('\r', '\\r')[:80]
+            result["_debug"] = "no_items"
+            safe_cid = (cid or "None").replace('\\n', '\\\\n').replace('\\r', '\\\\r')[:80]
             _LOGGER.warning("HEOS browse returned 0 items for cid=%s", safe_cid)
+            
         return result
 
     async def play_stream(self, sid: int, mid: str) -> bool:
         """Play a stream directly (e.g., a TuneIn radio station)."""
         if not self._pid:
             return False
+            
         # Prevent HEOS command injection via mid parameter
-        if not mid or '\r' in mid or '\n' in mid or len(mid) > 500:
+        if not mid or '\\r' in mid or '\\n' in mid or len(mid) > 500:
             _LOGGER.warning("Invalid mid rejected (injection or length)")
             return False
+            
         resp = await self._command("browse/play_stream", f"pid={self._pid}&sid={sid}&mid={mid}")
         return resp is not None and resp.get("heos", {}).get("result") == "success"
+

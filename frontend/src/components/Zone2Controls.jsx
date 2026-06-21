@@ -3,16 +3,22 @@ import PowerControl from './PowerControl'
 import MediaControls from './MediaControls'
 import SourceSelector from './SourceSelector'
 
-export default function Zone2Controls({ state, sendCommand, post, sources, sourceNameMap, zoneName }) {
+export default function Zone2Controls({ state, sendCommand, post, sources, sourceNameMap, sourceNameOverrides, radioFavorites, onRenameSource, onRadioFavoriteChange, zoneName }) {
   const volume = state?.z2_volume
   const muted = state?.z2_muted
+  const sleepTimer = state?.z2_sleep_timer
 
   const [localVol, setLocalVol] = useState(volume ?? 0)
+  const [selectedSleep, setSelectedSleep] = useState(sleepTimer ?? 'OFF')
   const debounceRef = useRef(null)
 
   useEffect(() => {
     if (volume != null) setLocalVol(volume)
   }, [volume])
+
+  useEffect(() => {
+    setSelectedSleep(sleepTimer ?? 'OFF')
+  }, [sleepTimer])
 
   const handleVolChange = useCallback((e) => {
     const v = parseInt(e.target.value)
@@ -20,6 +26,11 @@ export default function Zone2Controls({ state, sendCommand, post, sources, sourc
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => post('/zone2/volume', { level: v }), 150)
   }, [post])
+
+  const setSleep = useCallback(() => {
+    if (selectedSleep === 'OFF') sendCommand('Z2SLPOFF')
+    else sendCommand(`Z2SLP${String(selectedSleep).padStart(3, '0')}`)
+  }, [selectedSleep, sendCommand])
 
   return (
     <div className="space-y-4">
@@ -62,6 +73,29 @@ export default function Zone2Controls({ state, sendCommand, post, sources, sourc
         />
       </div>
 
+      {/* Sleep Timer */}
+      <div className="card">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xs font-medium text-denon-muted uppercase tracking-wider mb-1">Sleep Timer</h2>
+            <p className="text-sm text-denon-text">{sleepTimer == null ? 'Off' : `${sleepTimer} min`}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedSleep}
+              onChange={(e) => setSelectedSleep(e.target.value === 'OFF' ? 'OFF' : parseInt(e.target.value, 10))}
+              className="bg-denon-surface border border-denon-border/50 rounded-xl text-sm px-3 py-2 text-denon-text"
+            >
+              <option value="OFF">OFF</option>
+              {[10, 20, 30, 60, 90, 120].map(min => (
+                <option key={min} value={min}>{min} min</option>
+              ))}
+            </select>
+            <button onClick={setSleep} className="btn-ghost px-4 py-2 text-sm font-medium">Set</button>
+          </div>
+        </div>
+      </div>
+
       {/* Media */}
       <MediaControls state={state} sendCommand={sendCommand} post={post} zone="zone2" />
 
@@ -71,6 +105,10 @@ export default function Zone2Controls({ state, sendCommand, post, sources, sourc
         sendCommand={sendCommand}
         sources={sources}
         sourceNameMap={sourceNameMap}
+        sourceNameOverrides={sourceNameOverrides}
+        radioFavorites={radioFavorites}
+        onRenameSource={onRenameSource}
+        onRadioFavoriteChange={onRadioFavoriteChange}
         zone="zone2"
       />
     </div>

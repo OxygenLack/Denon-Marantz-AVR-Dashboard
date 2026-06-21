@@ -17,11 +17,11 @@ export const THEMES = {
 
 const STORAGE_KEY = 'denon-dashboard-theme'
 
-/** Get the active theme name: localStorage > serverDefault > 'gold' */
+/** Get the active theme name: server-persisted default > local fallback > 'gold'. */
 export function getTheme(serverDefault) {
+  if (serverDefault && THEMES[serverDefault]) return serverDefault
   const stored = localStorage.getItem(STORAGE_KEY)
   if (stored && THEMES[stored]) return stored
-  if (serverDefault && THEMES[serverDefault]) return serverDefault
   return 'gold'
 }
 

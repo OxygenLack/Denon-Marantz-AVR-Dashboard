@@ -20,6 +20,7 @@ from .const import (
     TELNET_HEARTBEAT_INTERVAL,
     TELNET_MAX_RECONNECT,
     TELNET_RECONNECT_DELAY,
+    TELNET_RECONNECT_MAX_DELAY,
     TELNET_TIMEOUT,
     TONE_0DB,
     VOLUME_0DB,
@@ -32,6 +33,18 @@ _CV_RE = re.compile(r"^CV([A-Z0-9]+)\s+(\d+)$")
 
 # Strict validation for raw telnet commands (from shared constant)
 _COMMAND_RE = re.compile(COMMAND_PATTERN)
+
+# Prefixes whose payloads can reveal device topology / user-chosen labels.
+# Redacted in DEBUG RX logs so log scrapes never carry the receiver's friendly
+# name or per-source display names.
+_REDACTED_RX_PREFIXES = ("NSFRN", "SSFUN", "SSSOD")
+
+
+def _redact_rx(line: str) -> str:
+    for prefix in _REDACTED_RX_PREFIXES:
+        if line.startswith(prefix):
+            return f"{prefix} <redacted>"
+    return line
 
 
 class DenonTelnetClient:
@@ -83,6 +96,7 @@ class DenonTelnetClient:
             "z2_power": None,
             "z2_volume": None,
             "z2_muted": None,
+            "z2_sleep_timer": None,
             "z2_source": None,
         }
 
@@ -193,7 +207,7 @@ class DenonTelnetClient:
                         line_bytes, buf = buf.split(b"\r", 1)
                         text = line_bytes.decode(errors="ignore").strip()
                         if text:
-                            _LOGGER.debug("RX: %s", text)
+                            _LOGGER.debug("RX: %s", _redact_rx(text))
                             await self._parse(text)
                 except asyncio.TimeoutError:
                     continue
@@ -232,9 +246,15 @@ class DenonTelnetClient:
         try:
             while not self._shutting_down:
                 attempt += 1
-                _LOGGER.info("Reconnect attempt %d to %s", attempt, self.host)
+                delay = min(
+                    TELNET_RECONNECT_DELAY * (2 ** min(attempt - 1, 5)),
+                    TELNET_RECONNECT_MAX_DELAY,
+                )
+                _LOGGER.info(
+                    "Reconnect attempt %d to %s in %ds", attempt, self.host, delay
+                )
                 try:
-                    await asyncio.sleep(TELNET_RECONNECT_DELAY)
+                    await asyncio.sleep(delay)
                     await self.connect()
                     _LOGGER.info("Reconnected to %s", self.host)
                     return
@@ -248,235 +268,296 @@ class DenonTelnetClient:
 
     # -- parser --
 
+    def _init_handlers(self) -> None:
+        if hasattr(self, "_handlers"):
+            return
+        self._handlers = [
+            (re.compile(r"^PW(STANDBY|ON)$"), self._handle_power),
+            (re.compile(r"^ZM(ON|OFF)$"), self._handle_zone_main),
+            (re.compile(r"^MV(MAX\s*\d{2,3}|\d{2,3})$"), self._handle_volume),
+            (re.compile(r"^MU(ON|OFF)$"), self._handle_mute),
+            (re.compile(r"^SI(.+)$"), self._handle_source),
+            (re.compile(r"^MS(.+)$"), self._handle_surround_mode),
+            (re.compile(r"^CV([A-Z0-9]+)\s+(\d+)$"), self._handle_channel_volume),
+            (re.compile(r"^PSTONE CTRL(.+)$"), self._handle_tone_ctrl),
+            (re.compile(r"^PSBAS(.+)$"), self._handle_bass),
+            (re.compile(r"^PSTRE(.+)$"), self._handle_treble),
+            (re.compile(r"^PSDIL(.+)$"), self._handle_dialog),
+            (re.compile(r"^PSSWL2(.+)$"), self._handle_subwoofer2),
+            (re.compile(r"^PSSWL(.+)$"), self._handle_subwoofer),
+            (re.compile(r"^PSMULTEQ:(.+)$"), self._handle_multeq),
+            (re.compile(r"^PSDYNEQ(.+)$"), self._handle_dyneq),
+            (re.compile(r"^PSDYNVOL(.+)$"), self._handle_dynvol),
+            (re.compile(r"^PSREFLEV(.+)$"), self._handle_reflev),
+            (re.compile(r"^SLP(.+)$"), self._handle_sleep),
+            (re.compile(r"^ECO(.+)$"), self._handle_eco),
+            (re.compile(r"^NSFRN\s*(.+)$"), self._handle_nsfrn),
+            (re.compile(r"^SSFUN(.+)$"), self._handle_ssfun),
+            (re.compile(r"^SSSOD(.+)$"), self._handle_sssod),
+            (re.compile(r"^SD(.+)$"), self._handle_sd),
+            (re.compile(r"^OPSMLALL(.*)$"), self._handle_opsmlall),
+            # Z2 payloads: power/mute, sleep (SLP<value>), volume (2-3 digits),
+            # or a source code (uppercase + digits + '/', 2-12 chars). The
+            # source class is intentionally tight so unknown Z2... lines do
+            # not silently get stored as z2_source.
+            (
+                re.compile(
+                    r"^Z2(ON|OFF|MUON|MUOFF|SLP[A-Z0-9]+|\d{2,3}|[A-Z][A-Z0-9/]{1,11})$"
+                ),
+                self._handle_zone2,
+            ),
+        ]
+
     async def _parse(self, line: str) -> None:
-        changed = False
+        self._init_handlers()
+        for pattern, handler in self._handlers:
+            match = pattern.match(line)
+            if match:
+                if handler(match):
+                    await self._notify()
+                return
 
-        # Power: PW = system power (on if ANY zone active), ZM = main zone only
-        if line == "PWSTANDBY":
-            # System standby → everything off
-            self.state["power"] = False; changed = True
-        elif line == "PWON":
-            # System on, but main zone might still be off — don't set power=True here
-            # We rely on ZM responses for main zone state
-            pass
-        elif line == "ZMON":
-            self.state["power"] = True; changed = True
-        elif line == "ZMOFF":
-            self.state["power"] = False; changed = True
+    def _handle_power(self, match: re.Match) -> bool:
+        if match.group(1) == "STANDBY":
+            self.state["power"] = False
+            return True
+        return False
 
-        # Master volume
-        elif line.startswith("MV") and not line.startswith("MVMAX"):
-            vol = self._parse_volume(line[2:])
-            if vol is not None:
-                self.state["volume"] = vol; changed = True
-        elif line.startswith("MVMAX"):
-            vol = self._parse_volume(line[5:])
-            if vol is not None:
-                self.state["volume_max"] = vol
+    def _handle_zone_main(self, match: re.Match) -> bool:
+        self.state["power"] = (match.group(1) == "ON")
+        return True
 
-        # Mute
-        elif line == "MUON":
-            self.state["muted"] = True; changed = True
-        elif line == "MUOFF":
-            self.state["muted"] = False; changed = True
+    def _handle_volume(self, match: re.Match) -> bool:
+        val = match.group(1)
+        if val.startswith("MAX"):
+            v = self._parse_volume(val[3:])
+            if v is not None:
+                self.state["volume_max"] = v
+            return False
+        else:
+            v = self._parse_volume(val)
+            if v is not None:
+                self.state["volume"] = v
+                return True
+        return False
 
-        # Source
-        elif line.startswith("SI"):
-            self.state["source"] = line[2:]; changed = True
+    def _handle_mute(self, match: re.Match) -> bool:
+        self.state["muted"] = (match.group(1) == "ON")
+        return True
 
-        # Surround mode
-        elif line.startswith("MS"):
-            self.state["surround_mode"] = line[2:]; changed = True
+    def _handle_source(self, match: re.Match) -> bool:
+        self.state["source"] = match.group(1)
+        return True
 
-        # Channel volumes
-        elif line.startswith("CV") and line != "CVEND":
-            m = _CV_RE.match(line)
-            if m:
-                ch, val = m.group(1), int(m.group(2))
-                if ch in CHANNEL_NAMES:
-                    self.state["channel_volumes"][ch] = val
-                    changed = True
+    def _handle_surround_mode(self, match: re.Match) -> bool:
+        self.state["surround_mode"] = match.group(1)
+        return True
 
-        # Tone control
-        elif line.startswith("PSTONE CTRL"):
-            val = line.split()[-1]
-            self.state["tone_control"] = val == "ON"; changed = True
-        elif line.startswith("PSBAS"):
-            val = line[5:].strip()
-            if val not in ("?", ""):
-                try:
-                    self.state["bass"] = int(val); changed = True
-                except ValueError:
-                    pass
-        elif line.startswith("PSTRE"):
-            val = line[5:].strip()
-            if val not in ("?", ""):
-                try:
-                    self.state["treble"] = int(val); changed = True
-                except ValueError:
-                    pass
+    def _handle_channel_volume(self, match: re.Match) -> bool:
+        ch, val = match.group(1), int(match.group(2))
+        if ch in CHANNEL_NAMES:
+            self.state["channel_volumes"][ch] = val
+            return True
+        return False
 
-        # Dialog level
-        elif line.startswith("PSDIL"):
-            val = line[5:].strip()
-            if val == "ON":
-                self.state["dialog_level_enabled"] = True; changed = True
-            elif val == "OFF":
-                self.state["dialog_level_enabled"] = False; changed = True
+    def _handle_tone_ctrl(self, match: re.Match) -> bool:
+        self.state["tone_control"] = (match.group(1).strip() == "ON")
+        return True
+
+    def _handle_bass(self, match: re.Match) -> bool:
+        val = match.group(1).strip()
+        if val not in ("?", ""):
+            try:
+                self.state["bass"] = int(val)
+                return True
+            except ValueError: pass
+        return False
+
+    def _handle_treble(self, match: re.Match) -> bool:
+        val = match.group(1).strip()
+        if val not in ("?", ""):
+            try:
+                self.state["treble"] = int(val)
+                return True
+            except ValueError: pass
+        return False
+
+    def _handle_dialog(self, match: re.Match) -> bool:
+        val = match.group(1).strip()
+        if val == "ON":
+            self.state["dialog_level_enabled"] = True
+            return True
+        elif val == "OFF":
+            self.state["dialog_level_enabled"] = False
+            return True
+        elif val not in ("?", ""):
+            try:
+                self.state["dialog_level"] = int(val)
+                return True
+            except ValueError: pass
+        return False
+
+    def _handle_subwoofer2(self, match: re.Match) -> bool:
+        val = match.group(1).strip()
+        if val not in ("ON", "OFF", "?", ""):
+            try:
+                self.state["subwoofer2_level"] = int(val)
+                return True
+            except ValueError: pass
+        return False
+
+    def _handle_subwoofer(self, match: re.Match) -> bool:
+        val = match.group(1).strip()
+        if val == "OFF":
+            self.state["subwoofer_level"] = None
+            return True
+        elif val not in ("ON", "?", ""):
+            try:
+                self.state["subwoofer_level"] = int(val)
+                return True
+            except ValueError: pass
+        return False
+
+    def _handle_multeq(self, match: re.Match) -> bool:
+        self.state["multeq"] = match.group(1).strip()
+        return True
+
+    def _handle_dyneq(self, match: re.Match) -> bool:
+        val = match.group(1).strip()
+        if val in ("ON", "OFF"):
+            self.state["dynamic_eq"] = (val == "ON")
+            return True
+        return False
+
+    def _handle_dynvol(self, match: re.Match) -> bool:
+        val = match.group(1).strip()
+        if val != "?":
+            self.state["dynamic_volume"] = val
+            return True
+        return False
+
+    def _handle_reflev(self, match: re.Match) -> bool:
+        val = match.group(1).strip()
+        if val != "?":
+            try:
+                self.state["ref_level_offset"] = int(val)
+                return True
+            except ValueError: pass
+        return False
+
+    def _handle_sleep(self, match: re.Match) -> bool:
+        val = match.group(1).strip()
+        if val == "OFF":
+            self.state["sleep_timer"] = None
+            return True
+        else:
+            try:
+                self.state["sleep_timer"] = int(val)
+                return True
+            except ValueError: pass
+        return False
+
+    def _handle_eco(self, match: re.Match) -> bool:
+        val = match.group(1).strip()
+        if val != "?" and val:
+            self.state["eco_mode"] = val
+            return True
+        return False
+
+    def _handle_nsfrn(self, match: re.Match) -> bool:
+        name = match.group(1).strip()
+        if name and name != "?":
+            self.state["friendly_name"] = name
+            return True
+        return False
+
+    def _handle_ssfun(self, match: re.Match) -> bool:
+        payload = match.group(1)
+        if payload.strip() == "END":
+            return False
+        if " " in payload:
+            code, name = payload.split(" ", 1)
+            name = name.strip()
+            if code and name:
+                self.state["source_names"][code] = name
+                return True
+        return False
+
+    def _handle_sssod(self, match: re.Match) -> bool:
+        payload = match.group(1)
+        if payload.strip() == "END":
+            return False
+        if " " in payload:
+            code, status = payload.rsplit(" ", 1)
+            code = code.strip()
+            if code and status == "DEL":
+                self.state["hidden_sources"].add(code)
+                return True
+            elif code and status == "USE":
+                self.state["hidden_sources"].discard(code)
+                return True
+        return False
+
+    def _handle_sd(self, match: re.Match) -> bool:
+        val = match.group(1)
+        if val and val != "?":
+            self.state["sound_decoder"] = val
+            return True
+        return False
+
+    def _handle_opsmlall(self, match: re.Match) -> bool:
+        payload = match.group(1).lstrip()
+        if payload == "END":
+            self.state["surround_mode_list"] = self._opsmlall_buffer
+            self._opsmlall_buffer = []
+            return True
+        elif len(payload) >= 7:
+            cat = payload[:3]
+            sort_id = payload[3:5]
+            active = (payload[5] == "1")
+            display_name = payload[6:]
+            telnet_cmd = KNOWN_MODE_COMMANDS.get(display_name)
+            self._opsmlall_buffer.append({
+                "category": cat,
+                "category_label": SURROUND_CATEGORIES.get(cat, cat),
+                "id": sort_id,
+                "active": active,
+                "display_name": display_name,
+                "command": telnet_cmd,
+            })
+        return False
+
+    def _handle_zone2(self, match: re.Match) -> bool:
+        val = match.group(1)
+        if val == "ON":
+            self.state["z2_power"] = True
+            return True
+        elif val == "OFF":
+            self.state["z2_power"] = False
+            return True
+        elif val == "MUON":
+            self.state["z2_muted"] = True
+            return True
+        elif val == "MUOFF":
+            self.state["z2_muted"] = False
+            return True
+        elif val.startswith("SLP"):
+            v = val[3:].strip()
+            if v == "OFF":
+                self.state["z2_sleep_timer"] = None
+                return True
             else:
                 try:
-                    self.state["dialog_level"] = int(val); changed = True
-                except ValueError:
-                    pass
-
-        # Subwoofer level
-        elif line.startswith("PSSWL2"):
-            val = line[6:].strip()
-            if val not in ("ON", "OFF", "?", ""):
-                try:
-                    self.state["subwoofer2_level"] = int(val); changed = True
-                except ValueError:
-                    pass
-        elif line.startswith("PSSWL"):
-            val = line[5:].strip()
-            if val == "ON":
-                pass  # subwoofer enabled
-            elif val == "OFF":
-                self.state["subwoofer_level"] = None; changed = True
-            elif val not in ("?", ""):
-                try:
-                    self.state["subwoofer_level"] = int(val); changed = True
-                except ValueError:
-                    pass
-
-        # MultEQ
-        elif line.startswith("PSMULTEQ:"):
-            self.state["multeq"] = line[9:].strip(); changed = True
-
-        # Dynamic EQ
-        elif line.startswith("PSDYNEQ"):
-            val = line[7:].strip()
-            if val in ("ON", "OFF"):
-                self.state["dynamic_eq"] = val == "ON"; changed = True
-
-        # Dynamic Volume
-        elif line.startswith("PSDYNVOL"):
-            val = line[8:].strip()
-            if val != "?":
-                self.state["dynamic_volume"] = val; changed = True
-
-        # Reference level offset
-        elif line.startswith("PSREFLEV"):
-            val = line[8:].strip()
-            if val != "?":
-                try:
-                    self.state["ref_level_offset"] = int(val); changed = True
-                except ValueError:
-                    pass
-
-        # Sleep timer
-        elif line.startswith("SLP"):
-            val = line[3:].strip()
-            if val == "OFF":
-                self.state["sleep_timer"] = None; changed = True
-            else:
-                try:
-                    self.state["sleep_timer"] = int(val); changed = True
-                except ValueError:
-                    pass
-
-        # Eco mode
-        elif line.startswith("ECO"):
-            val = line[3:].strip()
-            if val != "?" and val:
-                self.state["eco_mode"] = val; changed = True
-
-        # Friendly name (NSFRN <name>)
-        elif line.startswith("NSFRN"):
-            name = line[5:].strip()
-            if name and name != "?":
-                self.state["friendly_name"] = name
-                changed = True
-
-        # Source function names (SSFUN<CODE> <DisplayName>)
-        elif line.startswith("SSFUN"):
-            payload = line[5:]  # strip "SSFUN"
-            if payload.strip() == "END":
-                pass  # end-of-list sentinel
-            elif " " in payload:
-                code, name = payload.split(" ", 1)
-                name = name.strip()
-                if code and name:
-                    self.state["source_names"][code] = name
-                    changed = True
-
-        # Source on/delete (SSSOD<CODE> USE|DEL)
-        elif line.startswith("SSSOD"):
-            payload = line[5:]  # strip "SSSOD"
-            if payload.strip() == "END":
-                pass
-            elif " " in payload:
-                code, status = payload.rsplit(" ", 1)
-                code = code.strip()
-                if code and status == "DEL":
-                    self.state["hidden_sources"].add(code)
-                    changed = True
-                elif code and status == "USE":
-                    self.state["hidden_sources"].discard(code)
-                    changed = True
-
-        # Sound decoder (SDAUTO, SDHDMI, SDDIGITAL, etc.)
-        elif line.startswith("SD"):
-            val = line[2:]
-            if val and val != "?":
-                self.state["sound_decoder"] = val; changed = True
-
-        # Surround mode list (OPSMLALL {CAT}{ID}{ACTIVE}{DisplayName})
-        elif line.startswith("OPSMLALL"):
-            payload = line[9:]  # strip "OPSMLALL "
-            if payload == "END":
-                self.state["surround_mode_list"] = self._opsmlall_buffer
-                self._opsmlall_buffer = []
-                # Command mapping is handled by KNOWN_MODE_COMMANDS at parse time.
-                # No dynamic learning — MS events and OPSMLALL interleave during
-                # rapid cycling, making runtime correlation unreliable.
-                changed = True
-            elif len(payload) >= 7:
-                cat = payload[:3]
-                sort_id = payload[3:5]
-                active = payload[5] == "1"
-                display_name = payload[6:]
-                telnet_cmd = KNOWN_MODE_COMMANDS.get(display_name)
-                self._opsmlall_buffer.append({
-                    "category": cat,
-                    "category_label": SURROUND_CATEGORIES.get(cat, cat),
-                    "id": sort_id,
-                    "active": active,
-                    "display_name": display_name,
-                    "command": telnet_cmd,
-                })
-
-        # Zone 2
-        elif line == "Z2ON":
-            self.state["z2_power"] = True; changed = True
-        elif line == "Z2OFF":
-            self.state["z2_power"] = False; changed = True
-        elif line == "Z2MUON":
-            self.state["z2_muted"] = True; changed = True
-        elif line == "Z2MUOFF":
-            self.state["z2_muted"] = False; changed = True
-        elif line.startswith("Z2SLP"):
-            # Zone 2 sleep timer — ignore for now (not exposed in UI)
-            pass
-        elif line.startswith("Z2"):
-            part = line[2:]
-            if part.isdigit():
-                self.state["z2_volume"] = int(part); changed = True
-            elif part and not part.endswith("?") and part not in ("MU", "SLP"):
-                self.state["z2_source"] = part; changed = True
-
-        if changed:
-            await self._notify()
+                    self.state["z2_sleep_timer"] = int(v)
+                    return True
+                except ValueError: pass
+        elif val.isdigit():
+            self.state["z2_volume"] = int(val)
+            return True
+        elif val:
+            self.state["z2_source"] = val
+            return True
+        return False
 
     def _parse_volume(self, s: str) -> float | None:
         s = s.strip()

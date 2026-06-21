@@ -4,7 +4,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import WebSocket
@@ -27,10 +30,28 @@ class AppState:
         self.discovering: bool = False
         self.speaker_calibration: dict[str, float] = {}
         self.source_name_cache: dict[str, str] = {}
+        self.source_name_overrides: dict[str, str] = {}
+        self.data_dir = Path(os.environ.get("DENON_DASHBOARD_DATA_DIR", "/data"))
+        self.source_name_overrides_path = self.data_dir / "source_names.json"
+        self.ui_settings_path = self.data_dir / "ui_settings.json"
+        self.night_mode_config_path = self.data_dir / "night_mode.json"
+        self.radio_favorites_path = self.data_dir / "radio_favorites.json"
+        self.ui_settings: dict[str, Any] = {}
+        self.night_mode_config: dict[str, Any] = self.default_night_mode_config()
+        self.radio_favorites: list[dict[str, Any]] = []
+        self.night_mode_auto_active: bool = False
         self.heos_available_services: set[str] = set()  # HEOS service names from receiver
         self.media_state: dict[str, Any] = {"now_playing": None, "play_state": None}
-        self._media_poll_task: asyncio.Task | None = None
+        self.night_mode_enabled: bool = False
+        self.night_mode_snapshot: dict[str, int] = {}
         self._lock = asyncio.Lock()
+        self._last_broadcast_state: dict[str, Any] = {}
+
+    @asynccontextmanager
+    async def locked(self):
+        """Public context manager to synchronize state mutations."""
+        async with self._lock:
+            yield
 
     @property
     def discovered_sources(self) -> dict[str, str]:
@@ -76,12 +97,168 @@ class AppState:
         """
         if not code:
             return None
+        if code in self.source_name_overrides:
+            return self.source_name_overrides[code]
         if code in self.source_name_cache:
             return self.source_name_cache[code]
         discovered = self.discovered_sources
         if code in discovered:
             return discovered[code]
         return DEFAULT_SOURCES.get(code, code)
+
+    def load_source_name_overrides(self) -> None:
+        """Load persisted source display name overrides from the data volume."""
+        try:
+            if not self.source_name_overrides_path.exists():
+                self.source_name_overrides = {}
+                return
+            data = json.loads(self.source_name_overrides_path.read_text())
+            if isinstance(data, dict):
+                self.source_name_overrides = {
+                    str(code): str(name)
+                    for code, name in data.items()
+                    if isinstance(code, str) and isinstance(name, str) and name.strip()
+                }
+            else:
+                self.source_name_overrides = {}
+        except Exception as exc:
+            _LOGGER.warning("Failed to load source name overrides: %s", exc)
+            self.source_name_overrides = {}
+
+    def save_source_name_overrides(self) -> None:
+        """Persist source display name overrides to the data volume."""
+        try:
+            self.source_name_overrides_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.source_name_overrides_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self.source_name_overrides, indent=2, sort_keys=True))
+            tmp.replace(self.source_name_overrides_path)
+        except Exception as exc:
+            _LOGGER.error("Failed to save source name overrides: %s", exc)
+            raise
+
+    def reset_source_name_override(self, code: str) -> None:
+        self.source_name_overrides.pop(code, None)
+        self.save_source_name_overrides()
+
+    def set_source_name_override(self, code: str, name: str) -> None:
+        self.source_name_overrides[code] = name.strip()
+        self.save_source_name_overrides()
+
+    def load_ui_settings(self) -> None:
+        """Load persisted UI settings from the data volume."""
+        try:
+            if not self.ui_settings_path.exists():
+                self.ui_settings = {}
+                return
+            data = json.loads(self.ui_settings_path.read_text())
+            self.ui_settings = data if isinstance(data, dict) else {}
+        except Exception as exc:
+            _LOGGER.warning("Failed to load UI settings: %s", exc)
+            self.ui_settings = {}
+
+    def save_ui_settings(self) -> None:
+        """Persist UI settings to the data volume."""
+        try:
+            self.ui_settings_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.ui_settings_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self.ui_settings, indent=2, sort_keys=True))
+            tmp.replace(self.ui_settings_path)
+        except Exception as exc:
+            _LOGGER.error("Failed to save UI settings: %s", exc)
+            raise
+
+    def update_ui_settings(self, updates: dict[str, Any]) -> None:
+        for key, value in updates.items():
+            if value is None:
+                self.ui_settings.pop(key, None)
+            else:
+                self.ui_settings[key] = value
+        self.save_ui_settings()
+
+    def default_night_mode_config(self) -> dict[str, Any]:
+        from config import settings
+        return {
+            "mode": "offset",
+            "schedule": {
+                "enabled": False,
+                "days": [],
+                "start": "22:00",
+                "end": "02:00",
+                "timezone": settings.timezone,
+            },
+            "channels": [],
+        }
+
+    def normalize_night_mode_config(self, data: dict[str, Any] | None) -> dict[str, Any]:
+        base = self.default_night_mode_config()
+        if not isinstance(data, dict):
+            return base
+        mode = data.get("mode", "offset")
+        if mode not in ("absolute", "offset"):
+            mode = "offset"
+        schedule = data.get("schedule", {}) if isinstance(data.get("schedule"), dict) else {}
+        valid_days = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+        days = [d for d in schedule.get("days", []) if d in valid_days] if isinstance(schedule.get("days"), list) else []
+        channels = data.get("channels", []) if isinstance(data.get("channels", []), list) else []
+        return {
+            "mode": mode,
+            "schedule": {
+                "enabled": bool(schedule.get("enabled", False)),
+                "days": days,
+                "start": schedule.get("start") or "22:00",
+                "end": schedule.get("end") or "02:00",
+                "timezone": schedule.get("timezone") or base["schedule"].get("timezone", "Europe/Berlin"),
+            },
+            "channels": channels,
+        }
+
+    def load_night_mode_config(self) -> None:
+        try:
+            if not self.night_mode_config_path.exists():
+                self.night_mode_config = self.default_night_mode_config()
+                return
+            self.night_mode_config = self.normalize_night_mode_config(
+                json.loads(self.night_mode_config_path.read_text())
+            )
+        except Exception as exc:
+            _LOGGER.warning("Failed to load night mode config: %s", exc)
+            self.night_mode_config = self.default_night_mode_config()
+
+    def save_night_mode_config(self) -> None:
+        self.night_mode_config_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.night_mode_config_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.night_mode_config, indent=2, sort_keys=True))
+        tmp.replace(self.night_mode_config_path)
+
+    def set_night_mode_config(self, config: dict[str, Any]) -> None:
+        self.night_mode_config = self.normalize_night_mode_config(config)
+        self.save_night_mode_config()
+
+    def load_radio_favorites(self) -> None:
+        try:
+            if not self.radio_favorites_path.exists():
+                self.radio_favorites = []
+                return
+            data = json.loads(self.radio_favorites_path.read_text())
+            self.radio_favorites = data if isinstance(data, list) else []
+        except Exception as exc:
+            _LOGGER.warning("Failed to load radio favorites: %s", exc)
+            self.radio_favorites = []
+
+    def save_radio_favorites(self) -> None:
+        self.radio_favorites_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.radio_favorites_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.radio_favorites, indent=2, sort_keys=True))
+        tmp.replace(self.radio_favorites_path)
+
+    def upsert_radio_favorite(self, favorite: dict[str, Any]) -> None:
+        self.radio_favorites = [f for f in self.radio_favorites if f.get("mid") != favorite.get("mid")]
+        self.radio_favorites.insert(0, favorite)
+        self.save_radio_favorites()
+
+    def remove_radio_favorite(self, mid: str) -> None:
+        self.radio_favorites = [f for f in self.radio_favorites if f.get("mid") != mid]
+        self.save_radio_favorites()
 
     def _resolve_heos_service(self) -> tuple[str, str] | None:
         """Detect active HEOS streaming service from now_playing data.
@@ -180,10 +357,13 @@ class AppState:
             "dynamic_volume": state.get("dynamic_volume"),
             "ref_level_offset": state.get("ref_level_offset"),
             "sleep_timer": state.get("sleep_timer"),
+            "night_mode_enabled": self.night_mode_enabled,
+            "night_mode_snapshot": self.night_mode_snapshot,
             "eco_mode": state.get("eco_mode"),
             "z2_power": state.get("z2_power"),
             "z2_volume": state.get("z2_volume"),
             "z2_muted": state.get("z2_muted"),
+            "z2_sleep_timer": state.get("z2_sleep_timer"),
             "z2_source": z2src,
             "z2_source_name": self.resolve_source_name(z2src),
             "now_playing": self.media_state.get("now_playing"),
@@ -191,9 +371,12 @@ class AppState:
             "stream_quality": self._detect_stream_quality(),
         }
 
-    async def broadcast_state(self) -> None:
+    async def broadcast_state(self, force: bool = False) -> None:
         """Broadcast current state to all connected WebSocket clients."""
         data = self.build_status()
+        if not force and data == self._last_broadcast_state:
+            return
+        self._last_broadcast_state = data
         msg = json.dumps(data)
         dead: set[WebSocket] = set()
         for ws in list(self.ws_clients):  # copy to avoid mutation during iteration
@@ -210,35 +393,34 @@ class AppState:
             return False
         return await self.telnet.send(cmd)
 
-    async def _poll_media(self) -> None:
-        """Background task: poll HEOS for now-playing every 5s, broadcast on change."""
-        while True:
-            try:
-                await asyncio.sleep(5)
-                if not self.heos or not self.heos.connected:
-                    continue
+    async def _on_heos_event(self, event: dict[str, Any]) -> None:
+        """Handle unsolicited HEOS events to update media state."""
+        heos = event.get("heos", {})
+        cmd = heos.get("command", "")
+        changed = False
+
+        if cmd == "player/state_changed":
+            msg = heos.get("message", "")
+            for part in msg.split("&"):
+                if part.startswith("state="):
+                    self.media_state["play_state"] = part[6:]
+                    changed = True
+        elif cmd == "player/now_playing_changed":
+            if self.heos and self.heos.connected:
+                # Fetch the full now_playing payload
                 now_playing = await self.heos.get_now_playing()
-                play_state = await self.heos.get_play_state()
-                new_state = {"now_playing": now_playing, "play_state": play_state}
-                if new_state != self.media_state:
-                    self.media_state = new_state
-                    await self.broadcast_state()
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                _LOGGER.debug("Media poll error: %s", exc)
+                self.media_state["now_playing"] = now_playing
+                changed = True
+
+        if changed:
+            await self.broadcast_state()
 
     async def connect_to_host(self, host: str) -> None:
         """Connect telnet + HEOS for a given host IP."""
         from calibration import fetch_speaker_calibration
 
-        async with self._lock:
+        async with self.locked():
             self.speaker_calibration = await fetch_speaker_calibration(host)
-
-            # Stop previous media poller
-            if self._media_poll_task:
-                self._media_poll_task.cancel()
-                self._media_poll_task = None
 
             if self.telnet:
                 await self.telnet.disconnect()
@@ -261,6 +443,8 @@ class AppState:
                 )
 
             heos_client = HeosClient(host, settings.denon_heos_port)
+            heos_client.on_event(self._on_heos_event)
+            
             try:
                 await heos_client.connect()
             except Exception as exc:
@@ -270,15 +454,18 @@ class AppState:
             self.telnet = telnet_client
             self.heos = heos_client
 
-            # Discover available HEOS music services and start media poller
+            # Discover available HEOS music services and initial media state
             if heos_client.connected:
                 try:
                     sources = await heos_client.get_music_sources()
                     self.heos_available_services = {s["name"] for s in sources}
                     _LOGGER.info("HEOS music services: %s", self.heos_available_services)
+                    
+                    # Initial state fetch
+                    self.media_state["now_playing"] = await heos_client.get_now_playing()
+                    self.media_state["play_state"] = await heos_client.get_play_state()
                 except Exception as exc:
-                    _LOGGER.warning("Failed to fetch HEOS music sources: %s", exc)
-                self._media_poll_task = asyncio.create_task(self._poll_media())
+                    _LOGGER.warning("Failed to fetch initial HEOS state: %s", exc)
 
         # Notify all connected WebSocket clients that state changed
         await self.broadcast_state()

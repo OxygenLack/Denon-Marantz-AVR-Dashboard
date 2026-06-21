@@ -194,6 +194,45 @@ async def test_set_source(mock_app_state):
     mock_app_state.telnet.send.assert_called_with("SITV")
 
 
+# ── Night Mode ─────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_night_mode_enable_absolute_and_offset(mock_app_state):
+    from main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post("/api/v1/night-mode", json={
+            "enabled": True,
+            "channels": [
+                {"channel": "SW", "mode": "absolute", "value": 38},
+                {"channel": "FL", "mode": "offset", "value": -4},
+            ],
+        })
+    assert resp.status_code == 200
+    assert mock_app_state.night_mode_enabled is True
+    assert mock_app_state.night_mode_snapshot["FL"] == 50
+    mock_app_state.telnet.send.assert_any_call("CVSW 38")
+    mock_app_state.telnet.send.assert_any_call("CVFL 46")
+
+
+@pytest.mark.asyncio
+async def test_night_mode_disable_restores_snapshot(mock_app_state):
+    from main import app
+
+    mock_app_state.night_mode_enabled = True
+    mock_app_state.night_mode_snapshot = {"FL": 50, "SW": 52}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post("/api/v1/night-mode", json={"enabled": False, "channels": []})
+    assert resp.status_code == 200
+    assert mock_app_state.night_mode_enabled is False
+    assert mock_app_state.night_mode_snapshot == {}
+    mock_app_state.telnet.send.assert_any_call("CVFL 50")
+    mock_app_state.telnet.send.assert_any_call("CVSW 52")
+
+
 # ── Media ──────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -252,6 +291,38 @@ async def test_device_info(mock_app_state):
     assert data["device_name"] == "Denon AVR"
     assert "channel_names" in data
     assert data["source_name_map"]["GAME"] == "Game Console"
+
+
+@pytest.mark.asyncio
+async def test_source_name_persist_and_reset(mock_app_state):
+    from main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post("/api/v1/source-names/GAME", json={"name": "PlayStation 5"})
+        assert resp.status_code == 200
+        resp = await ac.get("/api/v1/device")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source_name_map"]["GAME"] == "PlayStation 5"
+        assert data["source_name_overrides"]["GAME"] == "PlayStation 5"
+        resp = await ac.delete("/api/v1/source-names/GAME")
+        assert resp.status_code == 200
+        resp = await ac.get("/api/v1/device")
+        assert resp.json()["source_name_map"]["GAME"] == "Game Console"
+
+
+@pytest.mark.asyncio
+async def test_ui_theme_persisted_in_device_info(mock_app_state):
+    from main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post("/api/v1/ui-settings", json={"theme": "purple"})
+        assert resp.status_code == 200
+        resp = await ac.get("/api/v1/device")
+        assert resp.status_code == 200
+        assert resp.json()["theme"] == "purple"
 
 
 # ── Not Connected ──────────────────────────────────────────────────────────────

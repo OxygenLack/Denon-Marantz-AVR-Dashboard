@@ -21,7 +21,17 @@
 @layer components {
   .card {
     @apply bg-denon-card/80 backdrop-blur-sm rounded-2xl border border-denon-border/50 p-5
-           shadow-lg shadow-black/10;
+           shadow-lg shadow-black/10 transition-all duration-300;
+  }
+  .card:hover {
+    border-color: color-mix(in srgb, var(--accent) 24%, rgb(42 42 42));
+    box-shadow: 0 18px 45px rgb(0 0 0 / 0.18), 0 0 30px color-mix(in srgb, var(--accent) 7%, transparent);
+  }
+  .no-card-animations .card,
+  .no-card-animations .card:hover {
+    transition: none;
+    box-shadow: 0 10px 15px rgb(0 0 0 / 0.10);
+    border-color: rgb(42 42 42 / 0.5);
   }
   .btn {
     @apply px-4 py-2 rounded-xl font-medium transition-all duration-150
@@ -82,6 +92,222 @@ input[type="range"]::-webkit-slider-runnable-track {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Ambient / experience layer */
+.ambient-bg {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--ambient-color) calc(var(--ambient-intensity) * 42%), transparent) 0%, transparent 58%),
+    linear-gradient(180deg, #0D0D0D 0%, #111 48%, #080808 100%);
+}
+.ambient-orb {
+  position: absolute;
+  width: 46vw;
+  height: 46vw;
+  min-width: 260px;
+  min-height: 260px;
+  border-radius: 999px;
+  filter: blur(24px);
+  opacity: calc(var(--ambient-intensity) * 0.28);
+  background: var(--ambient-color);
+  animation: none;
+}
+.ambient-orb-1 { top: -18%; left: -20%; }
+.ambient-orb-2 {
+  right: -25%;
+  bottom: 5%;
+  animation-delay: -6s;
+  opacity: calc(var(--ambient-intensity) * 0.45);
+}
+.ambient-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.06;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--ambient-color) 35%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--ambient-color) 35%, transparent) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, transparent, black 18%, transparent 88%);
+}
+.ambient-playing .ambient-orb { opacity: calc(var(--ambient-intensity) * 0.34); }
+.ambient-night { background: radial-gradient(ellipse at 50% 0%, rgba(139, 92, 246, .18), transparent 55%), #080912; }
+@keyframes ambientFloat {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(6%, 4%, 0) scale(1.12); }
+}
+
+.mode-signal-wrap {
+  margin: -0.25rem 0 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.9rem;
+  background: rgb(255 255 255 / 0.025);
+  border: 1px solid rgb(255 255 255 / 0.05);
+}
+.mode-signal {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.mode-signal-label {
+  font-size: 10px;
+  color: rgb(136 136 136);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.mode-chip {
+  font-size: 10px;
+  font-weight: 700;
+  color: white;
+  padding: 0.22rem 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--chip-color) 24%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chip-color) 45%, transparent);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--chip-color) 18%, transparent);
+}
+.mode-chip-upmix {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.mode-arrow { color: rgb(136 136 136); font-size: 11px; }
+.mode-signal-explanation {
+  margin-top: 0.45rem;
+  font-size: 10px;
+  line-height: 1.45;
+  color: rgb(136 136 136 / 0.9);
+}
+
+.cache-reset-banner {
+  position: fixed;
+  left: 50%;
+  top: 0.75rem;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.65rem 0.8rem;
+  border-radius: 0.9rem;
+  background: rgb(13 13 13 / .88);
+  color: rgb(238 238 238);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 18px 45px rgb(0 0 0 / .35);
+  backdrop-filter: blur(12px);
+  font-size: 12px;
+}
+.cache-reset-banner button {
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.shortcut-overlay {
+  position: fixed;
+  left: 50%;
+  bottom: 2rem;
+  transform: translateX(-50%);
+  z-index: 80;
+  padding: 0.65rem 1rem;
+  border-radius: 999px;
+  background: rgb(13 13 13 / .82);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 18px 45px rgb(0 0 0 / .35), 0 0 25px color-mix(in srgb, var(--accent) 18%, transparent);
+  backdrop-filter: blur(12px);
+  font-size: 12px;
+  font-weight: 700;
+  animation: shortcutPop .18s ease-out;
+}
+@keyframes shortcutPop {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(.96); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+.seasonal-snow,
+.seasonal-lights,
+.seasonal-bats {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+}
+.seasonal-snow span {
+  position: absolute;
+  top: -12px;
+  border-radius: 999px;
+  background: white;
+  box-shadow: 0 0 10px white;
+  animation: snowFall linear infinite;
+}
+@keyframes snowFall {
+  to { transform: translate3d(22px, 105vh, 0); }
+}
+.seasonal-lights {
+  display: flex;
+  justify-content: space-around;
+  height: 22px;
+  inset: 0 0 auto 0;
+  padding: 7px 10px 0;
+}
+.seasonal-lights .light {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow: 0 0 14px currentColor;
+  animation: lightTwinkle 1.4s ease-in-out infinite alternate;
+}
+.seasonal-lights .light-1 { background: #22c55e; animation-delay: -.2s; }
+.seasonal-lights .light-2 { background: #eab308; animation-delay: -.5s; }
+.seasonal-lights .light-3 { background: #3b82f6; animation-delay: -.8s; }
+@keyframes lightTwinkle { to { opacity: .35; transform: scale(.75); } }
+.seasonal-bats span {
+  position: absolute;
+  top: 12%;
+  left: -10%;
+  font-size: 24px;
+  opacity: .45;
+  animation: batFly 16s linear infinite;
+}
+.seasonal-bats span:nth-child(2) { top: 24%; animation-delay: -7s; font-size: 18px; }
+.seasonal-bats span:nth-child(3) { top: 62%; animation-delay: -11s; }
+@keyframes batFly { to { transform: translateX(120vw) translateY(-30px); } }
+
+html.app-not-foreground .ambient-bg {
+  background: #0D0D0D !important;
+}
+html.app-not-foreground .ambient-orb,
+html.app-not-foreground .ambient-grid,
+html.app-not-foreground .seasonal-snow,
+html.app-not-foreground .seasonal-lights,
+html.app-not-foreground .seasonal-bats,
+html.app-not-foreground .shortcut-overlay,
+html.app-not-foreground .cache-reset-banner {
+  display: none !important;
+}
+html.app-not-foreground *,
+html.app-not-foreground *::before,
+html.app-not-foreground *::after {
+  animation-play-state: paused !important;
+  transition: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-orb,
+  .seasonal-snow span,
+  .seasonal-lights .light,
+  .seasonal-bats span {
+    animation: none !important;
+  }
 }
 
 /* Select styling */

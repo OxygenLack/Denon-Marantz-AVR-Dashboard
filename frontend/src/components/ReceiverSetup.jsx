@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import ThemePicker from './ThemePicker'
 
-const README_URL = 'https://github.com/OxygenLack/denon-dashboard#quick-start-docker'
+const README_URL = 'https://github.com/OxygenLack/Denon-Marantz-AVR-Dashboard#quick-start-docker'
 
 export default function ReceiverSetup({ reason, onConnect, currentTheme, onThemeChange }) {
   const [scanning, setScanning] = useState(false)

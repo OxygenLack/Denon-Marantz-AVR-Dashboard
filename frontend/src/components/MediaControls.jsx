@@ -60,12 +60,12 @@ export default function MediaControls({ state, sendCommand, post, zone = 'main' 
             <span className={`text-[10px] px-2 py-0.5 rounded-full ${
               isPlaying
                 ? 'bg-denon-green/10 text-denon-green'
-                : 'bg-denon-surface text-denon-muted'
+                : 'bg-denon-surface text-denon-text'
             }`}>
               {isPlaying ? '▶ Playing' : '⏸ Paused'}
             </span>
             {streamQuality && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-denon-surface text-denon-muted">
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-denon-surface text-denon-text">
                 {streamQuality}
               </span>
             )}

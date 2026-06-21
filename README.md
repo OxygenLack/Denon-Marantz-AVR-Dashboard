@@ -2,7 +2,7 @@
 
 A modern, real-time web dashboard for controlling Denon/Marantz AVR receivers. Built with React + FastAPI, communicates via **telnet** (port 23) and **HEOS CLI** (port 1255) — no dependency on the receiver's unreliable built-in web interface.
 
-[![Build](https://github.com/OxygenLack/denon-dashboard/actions/workflows/docker.yml/badge.svg)](https://github.com/OxygenLack/denon-dashboard/actions/workflows/docker.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![React 19](https://img.shields.io/badge/React-19-61dafb) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688) ![Docker](https://img.shields.io/badge/Docker-ready-2496ed) [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-integration-41BDF5?logo=homeassistant&logoColor=white)](https://github.com/OxygenLack/denon-dashboard-ha)
+[![Build](https://github.com/OxygenLack/Denon-Marantz-AVR-Dashboard/actions/workflows/docker.yml/badge.svg)](https://github.com/OxygenLack/Denon-Marantz-AVR-Dashboard/actions/workflows/docker.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![React 19](https://img.shields.io/badge/React-19-61dafb) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688) ![Docker](https://img.shields.io/badge/Docker-ready-2496ed) [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-integration-41BDF5?logo=homeassistant&logoColor=white)](https://github.com/OxygenLack/denon-dashboard-ha)
 
 > **Disclaimer:** This is an unofficial, community-developed project. Not affiliated with or endorsed by Denon, Marantz, or Sound United/Masimo. All product names and trademarks are the property of their respective owners.
 
@@ -24,19 +24,26 @@ A modern, real-time web dashboard for controlling Denon/Marantz AVR receivers. B
 - **Power** on/off (main zone only — doesn't affect Zone 2)
 - **Volume** control with slider, +/- buttons, and mute toggle
 - **Input Source** selection with custom names and icons
+- **Input Rename in UI** — rename source buttons directly from the dashboard. Names are stored in the container data volume, sync across all browsers/devices, and never change the receiver protocol source codes. Edit mode also shows a Reset button to restore the receiver/default source name
 - **Surround Modes** — cycle through categories (Movie/Music/Game/Pure) or pick any mode directly. Shows cycling order with current/next indicators. Info mode explains each mode's speaker layout, purpose, and quirks on hover (desktop) or via toggle (mobile). Mode list dynamically populated from receiver via OPSMLALL protocol data
 - **Internet Radio Browser** — full TuneIn radio browser with category navigation (Local Radio, Trending, Music genres, Sports, Talk, Podcasts, By Location). ~800+ stations preloaded on startup for instant search. Backend caching (1hr TTL) shared across all clients. Play any station directly from the browser. Country/region flag icons, genre icons, station logos
 - **Smart Source Detection** — automatically identifies the active HEOS streaming service (Spotify, TuneIn, Bluetooth, etc.) from the `NET` source using HEOS now-playing data. Highlights the correct source button instead of generic "Online Music". Region-locked services (Pandora, SiriusXM) hidden automatically when unavailable
 - **Media Controls** — play/pause, next/previous for HEOS/streaming sources
 - **Now Playing** — song, artist, station name, album art. Shows stream quality/bitrate when detectable (e.g., "AAC 128 kbps", "Spotify Connect")
 - **Speaker Levels** — per-channel volume trim with Audyssey calibration offsets
+- **Night Mode** — configurable per-speaker night listening preset. Select channels dynamically from the receiver, set absolute levels or offsets, apply with one click, and restore the previous levels when disabled
 - **Subwoofer Level**
 - **Tone Controls** — bass/treble (auto-hidden when tone control is off)
 - **Audio Settings** — MultEQ, Dynamic EQ, Dynamic Volume, Eco mode
 
 ### Zone 2
 - Independent power, volume, mute, and source control
+- Zone 2 sleep timer display and control
 - Media controls when on a streaming source
+
+### Usability
+- **Keyboard shortcuts** for play/pause, volume, mute, power, and zone switching
+- **Installable PWA** with web manifest and service worker for Add to Home Screen / standalone app use
 
 ### Status & Monitoring
 - Real-time state updates via WebSocket
@@ -62,7 +69,7 @@ Browser  ◄──WebSocket──►  FastAPI Backend  ──telnet (23)──�
 ```yaml
 services:
   denon-dashboard:
-    image: ghcr.io/oxygenlack/denon-dashboard:latest
+    image: ghcr.io/oxygenlack/denon-marantz-avr-dashboard:latest
     container_name: denon-dashboard
     restart: unless-stopped
     network_mode: host        # required for SSDP auto-discovery
@@ -88,13 +95,18 @@ If you use Traefik or can't use `network_mode: host`, set the IP explicitly:
 ```yaml
 services:
   denon-dashboard:
-    image: ghcr.io/oxygenlack/denon-dashboard:latest
+    image: ghcr.io/oxygenlack/denon-marantz-avr-dashboard:latest
     container_name: denon-dashboard
     restart: unless-stopped
     ports:
       - "8080:8080"
+    volumes:
+      - denon-dashboard-data:/data   # persists UI source renames across devices/restarts
     environment:
       - DENON_DASHBOARD_DENON_HOST=192.168.1.100   # your receiver's IP
+
+volumes:
+  denon-dashboard-data:
 ```
 
 > SSDP auto-discovery requires `network_mode: host` because Docker's bridge network blocks multicast. With bridge mode, set `DENON_DASHBOARD_DENON_HOST` explicitly.
@@ -114,8 +126,52 @@ All configuration is via environment variables with the `DENON_DASHBOARD_` prefi
 | `DENON_DASHBOARD_DENON_SOURCE_NAMES` | `{}` | JSON map of source codes → display names. |
 | `DENON_DASHBOARD_HEOS_SOURCES` | `true` | Include HEOS/network sources (Bluetooth, Internet Radio, Spotify, etc.) in the source list. The receiver's `SSFUN` command only reports physical inputs — this adds the missing network sources automatically. Set to `false` to hide them. |
 | `DENON_DASHBOARD_THEME` | `gold` | UI accent color. See [Themes](#themes) below. |
+| `DENON_DASHBOARD_TIMEZONE` | `Europe/Berlin` | Timezone used for schedules such as Night Mode. |
+| `DENON_DASHBOARD_TIME_FORMAT` | `auto` | Time display format. Values: `auto`, `24h`, `12h`. `auto` uses browser/system time formatting where available and falls back to 24h for European timezones. |
+| `DENON_DASHBOARD_UI_AMBIENT_BACKGROUND` | `true` | Enable animated ambient background. |
+| `DENON_DASHBOARD_UI_AMBIENT_INTENSITY` | `1.0` | Ambient background strength. Suggested range: `0.0`–`2.0`. |
+| `DENON_DASHBOARD_UI_SEASONAL_EFFECTS` | `auto` | Seasonal overlays. Values: `auto`, `off`, `winter`, `christmas`, `halloween`. |
+| `DENON_DASHBOARD_UI_SHORTCUT_OVERLAY` | `true` | Show small overlay feedback when keyboard shortcuts are used. |
+| `DENON_DASHBOARD_UI_CARD_ANIMATIONS` | `true` | Enable card hover glow/transitions. |
 | `DENON_DASHBOARD_CORS_ORIGINS` | *(empty)* | Comma-separated list of allowed CORS origins. Empty = same-origin only. Set to `*` to allow all origins (not recommended). |
 | `DENON_DASHBOARD_LOG_LEVEL` | `INFO` | Log verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+
+## Keyboard Shortcuts
+
+Shortcuts are active when the dashboard tab has focus. They are ignored while typing in inputs, selects, textareas, or while the Internet Radio browser modal is open.
+
+| Key | Action |
+|---|---|
+| `Space` | Play / pause current HEOS media |
+| `↑` | Volume up |
+| `↓` | Volume down |
+| `Shift` + `↑` | Main zone volume +0.5 step |
+| `Shift` + `↓` | Main zone volume -0.5 step |
+| `M` | Toggle mute for the active zone |
+| `P` | Toggle power for the active zone |
+| `Z` | Toggle between Main Zone and Zone 2 |
+
+Zone-aware shortcuts operate on the selected zone. Half-step volume shortcuts only apply to Main Zone because Zone 2 volume uses whole steps on Denon receivers.
+
+## UI Effects
+
+The dashboard includes optional visual effects. They can be disabled or forced through environment variables:
+
+```yaml
+environment:
+  - DENON_DASHBOARD_UI_AMBIENT_BACKGROUND=true
+  - DENON_DASHBOARD_UI_AMBIENT_INTENSITY=1.0
+  - DENON_DASHBOARD_UI_SEASONAL_EFFECTS=auto
+  - DENON_DASHBOARD_UI_SHORTCUT_OVERLAY=true
+  - DENON_DASHBOARD_UI_CARD_ANIMATIONS=true
+```
+
+`DENON_DASHBOARD_UI_SEASONAL_EFFECTS=auto` enables date-based effects:
+- Winter snow during Dec-Feb
+- Christmas lights + snow from Dec 1-25
+- Halloween bats/ghosts from Oct 25-31
+
+Set it to `off` to disable seasonal overlays, or force one with `winter`, `christmas`, or `halloween`.
 
 ## Themes
 
@@ -194,6 +250,8 @@ The dashboard exposes a full REST API at `/api/v1/`. All POST endpoints accept J
 | `POST` | `/api/v1/mute/off` | — | Unmute |
 | `POST` | `/api/v1/mute/toggle` | — | Toggle mute |
 | `POST` | `/api/v1/source` | `{"source": "GAME"}` | Select input source |
+| `POST` | `/api/v1/source-names/{code}` | `{"name": "PlayStation 5"}` | Persist a custom source display name in the data volume |
+| `DELETE` | `/api/v1/source-names/{code}` | — | Reset custom source display name to receiver/default name |
 | `POST` | `/api/v1/surround` | `{"mode": "STEREO"}` | Set surround mode |
 
 ### Speaker & Audio
@@ -202,6 +260,7 @@ The dashboard exposes a full REST API at `/api/v1/`. All POST endpoints accept J
 |---|---|---|---|
 | `POST` | `/api/v1/channel-volume` | `{"channel": "C", "level": 48}` | Set channel trim (38–62, 50=0dB) |
 | `POST` | `/api/v1/channel-volume/reset` | — | Reset all channels to 0dB |
+| `POST` | `/api/v1/night-mode` | `{"enabled": true, "channels": [{"channel": "SW", "mode": "absolute", "value": 38}]}` | Apply or restore Night Mode speaker preset |
 | `POST` | `/api/v1/tone` | `{"enabled": true, "bass": 52, "treble": 48}` | Tone controls |
 | `POST` | `/api/v1/subwoofer-level` | `{"level": 50}` | Subwoofer level (38–62) |
 | `POST` | `/api/v1/dynamic-eq` | `{"enabled": true}` | Dynamic EQ on/off |
@@ -222,6 +281,8 @@ The dashboard exposes a full REST API at `/api/v1/`. All POST endpoints accept J
 | `POST` | `/api/v1/zone2/mute/on` | — | Z2 mute |
 | `POST` | `/api/v1/zone2/mute/off` | — | Z2 unmute |
 | `POST` | `/api/v1/zone2/source` | `{"source": "NET"}` | Z2 source |
+
+Zone 2 sleep timer control is sent via WebSocket/raw telnet command (`Z2SLP030`, `Z2SLPOFF`) because Denon exposes it as a direct zone command.
 
 ### Media (HEOS)
 
@@ -268,6 +329,8 @@ For anyone building on this:
 - **After power on**: wait 1 second before sending commands
 - **Volume encoding**: `MV50` = 50 (-30 dB), `MV80` = 80 (0 dB). Three digits for 0.5 steps: `MV805` = 80.5
 - **Channel volume**: 38–62 where 50 = 0 dB trim
+- **Night Mode**: snapshots current `CV` channel trims before applying the preset, then restores that snapshot when disabled
+- **Zone 2 sleep timer**: `Z2SLP030` = 30 minutes, `Z2SLPOFF` = off
 - **Power**: `PW` = system power, `ZM` = main zone only. When only Z2 is on, `PWON` is true but `ZMOFF`
 - **HEOS**: Port 1255, line-delimited JSON, commands like `heos://player/set_play_state?pid=X&state=play`
 
@@ -312,17 +375,16 @@ Install via [HACS](https://hacs.xyz/) by adding `https://github.com/OxygenLack/d
 ## Roadmap
 
 ### Known Limitations
-- **HEOS source switching** - the receiver maps all HEOS sources (Bluetooth, Spotify, Internet Radio, etc.) to `SINET` internally. Switching between them via telnet is not possible. The dashboard detects and highlights the active service correctly, but the source buttons can't force-switch between HEOS services ([#2](https://github.com/OxygenLack/denon-dashboard/issues/2))
+- **HEOS source switching** - the receiver maps all HEOS sources (Bluetooth, Spotify, Internet Radio, etc.) to `SINET` internally. Switching between them via telnet is not possible. The dashboard detects and highlights the active service correctly, but the source buttons can't force-switch between HEOS services ([#2](https://github.com/OxygenLack/Denon-Marantz-AVR-Dashboard/issues/2))
 
 ### Planned
-- **Night mode / sub presets** — quick-switch subwoofer profiles (e.g., "Movie" vs "Night" with reduced sub level), or a time-based automatic night mode ([requested](https://reddit.com/r/hometheater/comments/1syh2mn/i_got_tired_of_denons_broken_web_ui_so_i_built_my/oiwhfpt/))
 - **Tactile transducer support** — show and control tactile transducer channel on the speaker status page ([requested](https://reddit.com/r/hometheater/comments/1syh2mn/i_got_tired_of_denons_broken_web_ui_so_i_built_my/oiwg22o/))
 - **Dirac slot selection** — switch between Dirac Live filter slots for receivers with Dirac support ([requested](https://reddit.com/r/hometheater/comments/1syh2mn/i_got_tired_of_denons_broken_web_ui_so_i_built_my/oixqkvf/))
-- **HEOS speaker grouping/ungrouping** — group and ungroup HEOS speakers ([requested](https://github.com/OxygenLack/denon-dashboard/issues/6))
+- **HEOS speaker grouping/ungrouping** — group and ungroup HEOS speakers ([requested](https://github.com/OxygenLack/Denon-Marantz-AVR-Dashboard/issues/6))
 - **Audyssey preset switching** (Preset 1 / Preset 2)
 - Feature parity with the original Denon/Marantz web UI
 
-**Want more?** Open an [issue](https://github.com/OxygenLack/denon-dashboard/issues) or submit a PR — contributions welcome.
+**Want more?** Open an [issue](https://github.com/OxygenLack/Denon-Marantz-AVR-Dashboard/issues) or submit a PR — contributions welcome.
 
 ## License
 

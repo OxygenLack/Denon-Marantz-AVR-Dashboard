@@ -89,6 +89,12 @@ const MODES = {
     bestFor: 'Streaming services (Netflix, Disney+)',
     notes: 'Can carry Atmos metadata for streaming Atmos content.',
   },
+  'Dolby Audio - Dolby Digital Plus': {
+    speakers: 'Front L/R, Center, Surround L/R, SB L/R, Sub (up to 7.1)',
+    description: 'Dolby Digital Plus decoding. This is the long receiver label for DD+.',
+    bestFor: 'Streaming services (Netflix, Disney+, Prime Video, Apple TV+)',
+    notes: 'Same codec as Dolby Audio - DD+. If shown with +DSUR, Dolby Surround is additionally upmixing it to your speaker layout.',
+  },
   'Dolby Audio - TrueHD': {
     speakers: 'Front L/R, Center, Surround L/R, SB L/R, Sub (up to 7.1)',
     description: 'Lossless Dolby TrueHD decoding — bit-perfect studio master audio.',
@@ -216,15 +222,32 @@ const ALIASES = {
   'PURE DIRECT': MODES['Pure Direct'],
   'DTS SURROUND': MODES['DTS Surround'],
   'DOLBY SURROUND': MODES['Dolby Surround'],
+  'DOLBY AUDIO-DD+ +DSUR': MODES['Dolby Surround'],
+  'DOLBY AUDIO - DD+ +DSUR': MODES['Dolby Surround'],
+  'DOLBY AUDIO-DD+': MODES['Dolby Audio - DD+'],
+  'DOLBY AUDIO - DD+': MODES['Dolby Audio - DD+'],
+  'DOLBY AUDIO-DOLBY DIGITAL PLUS': MODES['Dolby Audio - Dolby Digital Plus'],
+  'DOLBY AUDIO - DOLBY DIGITAL PLUS': MODES['Dolby Audio - Dolby Digital Plus'],
+  'DOLBY DIGITAL PLUS': MODES['Dolby Digital Plus'],
   'DOLBY DIGITAL': MODES['Dolby Digital'],
   'DOLBY ATMOS': MODES['Dolby Atmos'],
 }
 
+function normalizeModeKey(displayName) {
+  return (displayName || '')
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*-\s*/g, ' - ')
+    .trim()
+}
+
 export function getModeInfo(displayName) {
   if (!displayName) return null
+  const normalized = normalizeModeKey(displayName)
   return MODES[displayName]
     || UPPER_MAP[displayName.toUpperCase()]
     || ALIASES[displayName.toUpperCase()]
+    || ALIASES[normalized]
     || null
 }
 

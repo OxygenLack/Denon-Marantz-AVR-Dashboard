@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useCallback } from 'react'
 import { getModeInfo } from '../data/soundModeInfo'
 import ModeInfoPopover from './ModeInfoPopover'
 import ModeInfoPanel from './ModeInfoPanel'
+import ModeSignal from '../experience/ModeSignal'
 
 /* Category cycling commands */
 const CATEGORIES = [
@@ -19,6 +20,47 @@ const FALLBACK_MODES = [
   'ROCK ARENA', 'JAZZ CLUB', 'MONO MOVIE',
   'MATRIX', 'VIDEO GAME', 'VIRTUAL',
 ]
+
+function normalizeModeName(name) {
+  return (name || '')
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*-\s*/g, '-')
+    .trim()
+}
+
+function currentModeAliases(current) {
+  const n = normalizeModeName(current)
+  const aliases = new Set([n])
+
+  if (n.includes('+DSUR') || n.includes('DOLBY SURROUND')) {
+    aliases.add('DOLBY SURROUND')
+    aliases.add('DOLBY AUDIO - DOLBY SURROUND')
+    aliases.add('DOLBY AUDIO-DOLBY SURROUND')
+  }
+  if (n.includes('DD+') || n.includes('DOLBY DIGITAL PLUS')) {
+    aliases.add('DOLBY DIGITAL PLUS')
+    aliases.add('DOLBY AUDIO - DD+')
+    aliases.add('DOLBY AUDIO-DD+')
+  }
+  if (n.includes('DOLBY DIGITAL') && !n.includes('PLUS')) {
+    aliases.add('DOLBY DIGITAL')
+    aliases.add('DOLBY AUDIO - DOLBY DIGITAL')
+    aliases.add('DOLBY AUDIO-DOLBY DIGITAL')
+  }
+  if (n.includes('ATMOS')) aliases.add('DOLBY ATMOS')
+  if (n.includes('TRUEHD')) {
+    aliases.add('DOLBY TRUEHD')
+    aliases.add('DOLBY AUDIO - TRUEHD')
+    aliases.add('DOLBY AUDIO-TRUEHD')
+  }
+  if (n.includes('+NEURAL:X') || n.includes('NEURAL:X')) aliases.add('DTS NEURAL:X')
+  if (n.includes('DTS:X')) aliases.add('DTS:X')
+  if (n.includes('VIRTUAL:X')) aliases.add('DTS VIRTUAL:X')
+  if (n.includes('DTS SURROUND')) aliases.add('DTS SURROUND')
+
+  return aliases
+}
 
 export default function SurroundMode({ state, sendCommand }) {
   const current = state?.surround_mode
@@ -69,12 +111,21 @@ export default function SurroundMode({ state, sendCommand }) {
     return [...seen.values()]
   }, [modeList, hasModeList])
 
+  const currentAliases = useMemo(() => currentModeAliases(current), [current])
+
+  const fallbackModesWithCurrent = useMemo(() => {
+    if (!current) return FALLBACK_MODES
+    const normalizedFallbacks = new Set(FALLBACK_MODES.map(normalizeModeName))
+    const hasMatch = [...currentAliases].some(alias => normalizedFallbacks.has(alias))
+    return hasMatch ? FALLBACK_MODES : [current, ...FALLBACK_MODES]
+  }, [current, currentAliases])
+
   /* Check if a mode is the currently playing one */
   const isPlaying = (mode) => {
     if (!current) return false
-    if (mode.command === current) return true
-    if (mode.display_name?.toUpperCase() === current) return true
-    return false
+    const command = normalizeModeName(mode.command)
+    const display = normalizeModeName(mode.display_name)
+    return currentAliases.has(command) || currentAliases.has(display)
   }
 
   /* Click a mode button — send direct command */
@@ -190,6 +241,7 @@ export default function SurroundMode({ state, sendCommand }) {
             </span>
           )}
         </div>
+        <ModeSignal mode={current} />
         <div className="grid grid-cols-2 gap-2">
           {hasModeList ? (
             uniqueModes.map(mode => {
@@ -234,8 +286,8 @@ export default function SurroundMode({ state, sendCommand }) {
               )
             })
           ) : (
-            FALLBACK_MODES.map(modeName => {
-              const playing = current === modeName
+            fallbackModesWithCurrent.map(modeName => {
+              const playing = currentAliases.has(normalizeModeName(modeName))
               const hasInfo = !!getModeInfo(modeName)
               return (
                 <button

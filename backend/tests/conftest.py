@@ -29,6 +29,26 @@ def telnet_client():
     return client
 
 
+@pytest.fixture(autouse=True)
+def isolate_persistent_data(tmp_path):
+    """Keep tests from reading/writing the real /data source override file."""
+    from state import app_state
+
+    app_state.source_name_overrides_path = tmp_path / "source_names.json"
+    app_state.ui_settings_path = tmp_path / "ui_settings.json"
+    app_state.night_mode_config_path = tmp_path / "night_mode.json"
+    app_state.radio_favorites_path = tmp_path / "radio_favorites.json"
+    app_state.source_name_overrides = {}
+    app_state.ui_settings = {}
+    app_state.night_mode_config = {"mode": "offset", "channels": []}
+    app_state.radio_favorites = []
+    yield
+    app_state.source_name_overrides = {}
+    app_state.ui_settings = {}
+    app_state.night_mode_config = {"mode": "offset", "channels": []}
+    app_state.radio_favorites = []
+
+
 @pytest.fixture
 def mock_state() -> dict[str, Any]:
     """Default receiver state for tests."""
@@ -52,6 +72,7 @@ def mock_state() -> dict[str, Any]:
         "dynamic_volume": "OFF",
         "ref_level_offset": None,
         "sleep_timer": None,
+        "z2_sleep_timer": None,
         "eco_mode": "AUTO",
         "sound_decoder": "AUTO",
         "surround_mode_list": [],

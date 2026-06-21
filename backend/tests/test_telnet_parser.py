@@ -235,6 +235,18 @@ async def test_parse_z2_mute(telnet_client):
 
 
 @pytest.mark.asyncio
+async def test_parse_z2_sleep_timer(telnet_client):
+    await telnet_client._parse("Z2SLP030")
+    assert telnet_client.state["z2_sleep_timer"] == 30
+
+
+@pytest.mark.asyncio
+async def test_parse_z2_sleep_off(telnet_client):
+    await telnet_client._parse("Z2SLPOFF")
+    assert telnet_client.state["z2_sleep_timer"] is None
+
+
+@pytest.mark.asyncio
 async def test_parse_z2_source(telnet_client):
     await telnet_client._parse("Z2NET")
     assert telnet_client.state["z2_source"] == "NET"

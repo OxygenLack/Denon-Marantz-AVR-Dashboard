@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import RadioBrowser from './RadioBrowser'
 
 const RadioTowerIcon = () => (
@@ -103,25 +103,82 @@ const DEFAULT_SOURCES = {
   AUX1: 'AUX1', AUX2: 'AUX2',
 }
 
-export default function SourceSelector({ state, sendCommand, sources, sourceNameMap, zone = 'main' }) {
+export default function SourceSelector({
+  state,
+  sendCommand,
+  sources,
+  sourceNameMap,
+  sourceNameOverrides = {},
+  radioFavorites = [],
+  onRenameSource,
+  onRadioFavoriteChange,
+  zone = 'main',
+}) {
   const current = zone === 'main' ? state?.source : state?.z2_source
   const prefix = zone === 'main' ? 'SI' : 'Z2'
   const [radioBrowserOpen, setRadioBrowserOpen] = useState(false)
+  const [editMode, setEditMode] = useState(false)
+  const [editingCode, setEditingCode] = useState(null)
+  const [draftName, setDraftName] = useState('')
+  const longPressRef = useRef(null)
 
   const sourceList = sources.length > 0
     ? sources
     : Object.entries(DEFAULT_SOURCES).map(([id, name]) => ({ id, name }))
 
   const getName = (code) => sourceNameMap?.[code] || DEFAULT_SOURCES[code] || code
+  const getDefaultName = (code) => {
+    const discovered = sources.find(s => s.id === code)?.name
+    return discovered || DEFAULT_SOURCES[code] || code
+  }
+
+  const beginEdit = (code) => {
+    setEditingCode(code)
+    setDraftName(getName(code))
+  }
+
+  const commitEdit = () => {
+    if (!editingCode) return
+    const trimmed = draftName.trim()
+    if (trimmed) onRenameSource?.(editingCode, trimmed)
+    setEditingCode(null)
+    setDraftName('')
+  }
+
+  const resetName = (code) => {
+    if (!sourceNameOverrides?.[code]) return
+    onRenameSource?.(code, null)
+    if (editingCode === code) {
+      setEditingCode(null)
+      setDraftName('')
+    }
+  }
+
+  const startLongPress = (code) => {
+    clearTimeout(longPressRef.current)
+    longPressRef.current = setTimeout(() => resetName(code), 650)
+  }
+
+  const cancelLongPress = () => clearTimeout(longPressRef.current)
 
   // Backend resolves the actual HEOS service (Spotify, TuneIn, etc.) when source=NET
-  const currentDisplayName = (zone === 'main' ? state?.source_name : state?.z2_source_name) || getName(current)
+  const backendDisplayName = zone === 'main' ? state?.source_name : state?.z2_source_name
+  const currentDisplayName = sourceNameOverrides?.[current] || backendDisplayName || getName(current)
   const heosServiceCode = zone === 'main' ? state?.heos_source : null
 
   return (
     <div className="card">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-xs font-medium text-denon-muted uppercase tracking-wider">Input Source</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-xs font-medium text-denon-muted uppercase tracking-wider">Input Source</h2>
+          <button
+            onClick={() => { setEditMode(v => !v); setEditingCode(null) }}
+            className={`text-xs transition-colors ${editMode ? 'text-denon-gold' : 'text-denon-muted hover:text-denon-text'}`}
+            title={editMode ? 'Done renaming' : 'Rename inputs'}
+          >
+            {editMode ? '✓' : '✏️'}
+          </button>
+        </div>
         {current && (
           <span className="text-xs text-denon-gold font-medium flex items-center gap-1">
             <span className="text-base">{getIcon(current, currentDisplayName)}</span>
@@ -129,27 +186,68 @@ export default function SourceSelector({ state, sendCommand, sources, sourceName
           </span>
         )}
       </div>
+
+      {editMode && (
+        <p className="text-[10px] text-denon-muted/70 mb-2">
+          Click a source to rename. Use Reset to restore the receiver/default name.
+        </p>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         {sourceList.map(s => {
           const active = heosServiceCode
             ? s.id === heosServiceCode  // Highlight the specific HEOS service button
             : current === s.id
+          const displayName = getName(s.id)
+          const editing = editingCode === s.id
+          const canReset = Boolean(sourceNameOverrides?.[s.id])
           return (
             <button
               key={s.id}
-              onClick={() => sendCommand(`${prefix}${s.id}`)}
+              onClick={() => editMode ? beginEdit(s.id) : sendCommand(`${prefix}${s.id}`)}
+              onContextMenu={(e) => { e.preventDefault(); resetName(s.id) }}
+              onPointerDown={() => startLongPress(s.id)}
+              onPointerUp={cancelLongPress}
+              onPointerLeave={cancelLongPress}
               className={`group relative py-3 px-3 rounded-xl text-sm font-medium transition-all duration-150 text-left overflow-hidden ${
                 active
                   ? 'bg-gradient-to-br from-denon-gold/20 to-amber-500/10 text-denon-gold ring-1 ring-denon-gold/40'
                   : 'bg-denon-surface/70 text-denon-text hover:bg-denon-surface hover:scale-[1.02] active:scale-[0.98]'
-              }`}
+              } ${editMode ? 'ring-1 ring-denon-border/40' : ''}`}
+              title={editMode && canReset ? `Default: ${getDefaultName(s.id)}` : undefined}
             >
-              <span className="text-base mr-1.5">{getIcon(s.id, s.name)}</span>
-              <span className="text-xs">{s.name}</span>
+              <span className="text-base mr-1.5">{getIcon(s.id, displayName)}</span>
+              {editing ? (
+                <input
+                  autoFocus
+                  value={draftName}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  onBlur={commitEdit}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitEdit()
+                    if (e.key === 'Escape') { setEditingCode(null); setDraftName('') }
+                  }}
+                  className="w-[calc(100%-1.5rem)] bg-denon-dark border border-denon-gold/50 rounded-lg text-xs px-2 py-1 text-denon-text"
+                />
+              ) : (
+                <span className="text-xs pr-10">
+                  {displayName}{editMode && <span className="text-denon-muted ml-1">✎</span>}
+                </span>
+              )}
+              {editMode && canReset && !editing && (
+                <span
+                  onClick={(e) => { e.stopPropagation(); resetName(s.id) }}
+                  className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-denon-dark/80 text-[9px] text-denon-muted hover:text-denon-gold ring-1 ring-denon-border/40"
+                  title={`Reset to ${getDefaultName(s.id)}`}
+                >
+                  Reset
+                </span>
+              )}
               {active && (
                 <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-denon-gold" />
               )}
-              {s.id === 'IRADIO' && (
+              {s.id === 'IRADIO' && !editMode && (
                 <span
                   onClick={(e) => { e.stopPropagation(); setRadioBrowserOpen(true) }}
                   className="absolute bottom-1.5 right-1.5 p-1 rounded-lg bg-denon-surface/80 hover:bg-denon-gold/20 hover:text-denon-gold text-denon-muted transition-all cursor-pointer"
@@ -163,7 +261,12 @@ export default function SourceSelector({ state, sendCommand, sources, sourceName
         })}
       </div>
 
-      <RadioBrowser open={radioBrowserOpen} onClose={() => setRadioBrowserOpen(false)} />
+      <RadioBrowser
+        open={radioBrowserOpen}
+        onClose={() => setRadioBrowserOpen(false)}
+        favorites={radioFavorites}
+        onFavoriteChange={onRadioFavoriteChange}
+      />
     </div>
   )
 }

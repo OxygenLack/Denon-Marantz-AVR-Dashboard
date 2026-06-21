@@ -12,12 +12,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
+import urllib.parse
 
 from config import settings
 from denon.const import COMMAND_PATTERN
 from denon.discovery import discover_receivers
+from night_mode import reconcile_night_mode_schedule
 from routes import power, volume, audio, zone2, media, status
 from state import app_state
 
@@ -61,20 +61,51 @@ async def _auto_discover_and_connect() -> None:
         await asyncio.sleep(30)
 
 
+async def _night_mode_scheduler() -> None:
+    while True:
+        try:
+            await asyncio.sleep(30)
+            await reconcile_night_mode_schedule()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _LOGGER.debug("Night mode scheduler error: %s", exc)
+
+
 # ---- Lifespan ----
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Build source name cache from env config
     app_state.source_name_cache = settings.source_name_map.copy()
+    app_state.load_source_name_overrides()
+    app_state.load_ui_settings()
+    app_state.load_night_mode_config()
+    app_state.load_radio_favorites()
     _LOGGER.info(
         "Configured %d custom source names: %s",
         len(app_state.source_name_cache),
         list(app_state.source_name_cache.keys()),
     )
+    _LOGGER.info(
+        "Loaded %d persisted source name overrides from %s",
+        len(app_state.source_name_overrides),
+        app_state.source_name_overrides_path,
+    )
+    _LOGGER.info(
+        "Loaded %d persisted UI settings from %s",
+        len(app_state.ui_settings),
+        app_state.ui_settings_path,
+    )
+    _LOGGER.info(
+        "Loaded %d radio favorites and %d night mode channels",
+        len(app_state.radio_favorites),
+        len(app_state.night_mode_config.get("channels", [])),
+    )
 
     # Track background tasks for graceful shutdown
     bg_task: asyncio.Task | None = None
+    night_mode_task: asyncio.Task | None = asyncio.create_task(_night_mode_scheduler())
 
     host = settings.denon_host
     if host:
@@ -89,12 +120,13 @@ async def lifespan(app: FastAPI):
     yield
 
     # Graceful shutdown: cancel background tasks
-    if bg_task and not bg_task.done():
-        bg_task.cancel()
-        try:
-            await bg_task
-        except asyncio.CancelledError:
-            pass
+    for task in (bg_task, night_mode_task):
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     if app_state.heos:
         await app_state.heos.disconnect()
     if app_state.telnet:
@@ -110,30 +142,58 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Security headers
-class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response: Response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Permissions-Policy"] = (
-            "camera=(), microphone=(), geolocation=(), payment=()"
-        )
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "img-src 'self' http: https:; "
-            "style-src 'self' 'unsafe-inline'; "
-            "script-src 'self'; "
-            "connect-src 'self' ws: wss:; "
-            "frame-ancestors 'none'"
-        )
-        return response
+# Security headers (Pure ASGI Middleware)
+class SecurityHeadersMiddleware:
+    def __init__(self, app):
+        self.app = app
 
-app.add_middleware(_SecurityHeadersMiddleware)
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
 
-# CORS — configurable via DENON_DASHBOARD_CORS_ORIGINS (empty = same-origin only)
-cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+        path = scope.get("path", "")
+        # The service worker is a kill-switch (unregisters itself). It must
+        # never be cached, or stuck clients can't pick up the new SW.
+        is_sw = path == "/sw.js"
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = message.setdefault("headers", [])
+                headers.extend([
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"x-frame-options", b"DENY"),
+                    (b"referrer-policy", b"no-referrer"),
+                    (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
+                    (b"content-security-policy", b"default-src 'self'; img-src 'self' http: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'")
+                ])
+                if is_sw:
+                    headers.append((b"cache-control", b"no-cache, no-store, must-revalidate"))
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS — configurable via DENON_DASHBOARD_CORS_ORIGINS (empty = same-origin only).
+# Each entry must be a full scheme://host[:port] URL. Wildcard '*' is rejected
+# because it would also bypass the WebSocket Origin check below.
+def _parse_cors_origins(raw: str) -> list[str]:
+    result: list[str] = []
+    for entry in (o.strip() for o in raw.split(",")):
+        if not entry:
+            continue
+        if entry == "*":
+            _LOGGER.warning("CORS wildcard '*' rejected; specify explicit origins")
+            continue
+        parsed = urllib.parse.urlparse(entry)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            _LOGGER.warning("Ignoring malformed CORS origin: %s", entry)
+            continue
+        result.append(f"{parsed.scheme}://{parsed.netloc}")
+    return result
+
+
+cors_origins = _parse_cors_origins(settings.cors_origins)
 if cors_origins:
     app.add_middleware(
         CORSMiddleware,
@@ -158,8 +218,19 @@ async def websocket_endpoint(ws: WebSocket):
     # Validate Origin to prevent Cross-Site WebSocket Hijacking (CSWSH)
     origin = ws.headers.get("origin", "")
     if cors_origins and "*" not in cors_origins:
-        allowed = any(origin == o or origin.startswith(o) for o in cors_origins)
-        if not allowed and origin:  # allow empty origin (non-browser clients)
+        allowed = False
+        if origin:
+            try:
+                parsed_origin = urllib.parse.urlparse(origin)
+                # Reconstruct scheme://netloc for strict matching without trailing paths
+                origin_host = f"{parsed_origin.scheme}://{parsed_origin.netloc}"
+                allowed = origin_host in cors_origins
+            except Exception:
+                pass
+        else:
+            allowed = True  # allow empty origin (non-browser clients)
+            
+        if not allowed:
             await ws.close(code=4003, reason="Origin not allowed")
             return
 

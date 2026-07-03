@@ -38,6 +38,8 @@ def _make_mock_heos():
     mock.previous_track = AsyncMock(return_value=True)
     mock.get_now_playing = AsyncMock(return_value={"song": "Test Song"})
     mock.get_play_state = AsyncMock(return_value="play")
+    mock.check_account = AsyncMock(return_value={"signed_in": True, "username": "demo@heos", "reachable": True})
+    mock.is_source_available = AsyncMock(return_value=True)
     mock.disconnect = AsyncMock()
     return mock
 
@@ -262,6 +264,57 @@ async def test_media_now_playing(mock_app_state):
     data = resp.json()
     assert data["now_playing"]["song"] == "Test Song"
     assert data["play_state"] == "play"
+
+
+# ── Radio status ───────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_radio_status_ok(mock_app_state):
+    import routes.media as media
+    from main import app
+
+    media._cached_station_count = 0
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/api/v1/media/radio/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ready"] is True
+    assert data["reason"] == "ok"
+    assert data["account_signed_in"] is True
+
+
+@pytest.mark.asyncio
+async def test_radio_status_signed_out(mock_app_state):
+    import routes.media as media
+    from main import app
+
+    media._cached_station_count = 0
+    mock_app_state.heos.check_account = AsyncMock(
+        return_value={"signed_in": False, "username": None, "reachable": True})
+    mock_app_state.heos.is_source_available = AsyncMock(return_value=False)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/api/v1/media/radio/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ready"] is False
+    assert data["reason"] == "signed_out"
+
+
+@pytest.mark.asyncio
+async def test_radio_status_no_heos(mock_app_no_connection):
+    import routes.media as media
+    from main import app
+
+    media._cached_station_count = 0
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/api/v1/media/radio/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ready"] is False
+    assert data["reason"] == "no_heos"
 
 
 # ── Zone 2 ─────────────────────────────────────────────────────────────────────

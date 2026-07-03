@@ -130,6 +130,7 @@ class EcoModeRequest(BaseModel):
 class StatusResponse(BaseModel):
     connected: bool
     discovering: bool = False
+    theme: str | None = None
     power: bool | None = None
     volume: float | None = None
     volume_max: float | None = None

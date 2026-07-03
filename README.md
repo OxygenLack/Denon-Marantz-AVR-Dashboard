@@ -135,6 +135,7 @@ All configuration is via environment variables with the `DENON_DASHBOARD_` prefi
 | `DENON_DASHBOARD_UI_CARD_ANIMATIONS` | `true` | Enable card hover glow/transitions. |
 | `DENON_DASHBOARD_CORS_ORIGINS` | *(empty)* | Comma-separated list of allowed CORS origins. Empty = same-origin only. Set to `*` to allow all origins (not recommended). |
 | `DENON_DASHBOARD_LOG_LEVEL` | `INFO` | Log verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+| `DENON_DASHBOARD_DEMO_MODE` | `false` | Run against a built-in mock receiver — no physical AVR or `DENON_HOST` needed. Env-gated only. See [Demo Mode](#demo-mode). |
 
 ## Keyboard Shortcuts
 
@@ -349,6 +350,37 @@ cd frontend
 npm install
 npm run dev
 ```
+
+### Demo Mode
+
+Run the whole dashboard with a simulated receiver — no physical AVR required.
+Demo mode is **gated entirely on an environment variable**; there is no URL
+parameter or client-side toggle that can enable it.
+
+Set `DENON_DASHBOARD_DEMO_MODE=true` on the backend. A mock telnet client then
+serves a fully populated receiver state (power, volume, sources, surround modes,
+channel levels, Zone 2, …) over the normal WebSocket, so every UI section is
+interactive against fake data. When demo mode is on, `DENON_DASHBOARD_DENON_HOST`
+and network discovery are skipped.
+
+```bash
+# Backend in demo mode (no receiver, no DENON_HOST needed)
+cd backend
+DENON_DASHBOARD_DEMO_MODE=true python -m uvicorn main:app --reload --port 9999
+
+# Frontend (proxies /api to the backend)
+cd frontend
+npm run dev
+```
+
+For a container, add the env var to your compose `environment:` block. Leave it
+unset (or `false`) for normal operation against a real receiver.
+
+### TypeScript
+
+The frontend is written in TypeScript (strict). `npm run build` runs
+`tsc --noEmit` before `vite build`, so type errors block the build; run
+`npm run typecheck` for a standalone check.
 
 ### Build Docker Image
 

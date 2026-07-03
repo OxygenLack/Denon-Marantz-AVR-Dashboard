@@ -214,9 +214,31 @@ async def discover_receivers(timeout: float = 4.0) -> list[dict[str, Any]]:
     Discover Denon/Marantz AVR receivers on the local network via SSDP/UPnP.
     Returns list of dicts: {ip, model, telnet_port, heos_available}
     """
-    seen: dict[str, dict] = {}
+    from config import settings
 
+    seen: dict[str, dict] = {}
     loop = asyncio.get_running_loop()
+
+    # Env-configured host wins: bridge-mode Docker can't SSDP-multicast into the
+    # LAN and subnet scan skips 172.x, so trust the operator's DENON_DASHBOARD_DENON_HOST.
+    configured_host = (settings.denon_host or "").strip()
+    if configured_host:
+        telnet_ok = await loop.run_in_executor(None, _probe_port, configured_host, TELNET_PORT, 1.0)
+        if telnet_ok:
+            heos_ok = await loop.run_in_executor(None, _probe_port, configured_host, HEOS_PORT, 1.0)
+            seen[configured_host] = {
+                "ip": configured_host,
+                "model": "Denon/Marantz AVR (configured)",
+                "telnet_port": TELNET_PORT,
+                "heos_available": heos_ok,
+            }
+            _LOGGER.info("Discovery: seeded from DENON_DASHBOARD_DENON_HOST=%s", configured_host)
+        else:
+            _LOGGER.warning(
+                "Discovery: DENON_DASHBOARD_DENON_HOST=%s set but telnet:%d not reachable",
+                configured_host, TELNET_PORT,
+            )
+
     tasks = [
         loop.run_in_executor(None, _send_ssdp, st, timeout - 1.0)
         for st in SSDP_TARGETS
@@ -237,6 +259,9 @@ async def discover_receivers(timeout: float = 4.0) -> list[dict[str, Any]]:
         return await _subnet_scan(subnets, timeout=timeout)
 
     async def enrich(ip: str, info: dict) -> dict:
+        # Seeded entries (env-configured host) already carry final fields — pass through.
+        if info.get("telnet_port") is not None:
+            return info
         model = await loop.run_in_executor(None, _get_model_from_location, info.get("location"))
         telnet_ok = await loop.run_in_executor(None, _probe_port, ip, TELNET_PORT, 1.0)
         heos_ok = await loop.run_in_executor(None, _probe_port, ip, HEOS_PORT, 1.0)

@@ -220,6 +220,9 @@ async def set_ui_settings(req: UiSettingsRequest, state: AppState = Depends(get_
             raise HTTPException(400, "Invalid theme")
         updates["theme"] = req.theme
     state.update_ui_settings(updates)
+    # Push the new theme to every connected client so theme changes sync live
+    # across devices (theme is part of the broadcast state payload).
+    await state.broadcast_state(force=True)
     return {"ok": True, "ui_settings": state.ui_settings}
 
 

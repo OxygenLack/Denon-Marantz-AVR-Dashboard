@@ -333,6 +333,7 @@ class AppState:
         return {
             "connected": self.telnet.connected if self.telnet else False,
             "discovering": self.discovering,
+            "theme": self.ui_settings.get("theme") or settings.theme,
             "power": state.get("power"),
             "volume": state.get("volume"),
             "volume_max": state.get("volume_max"),
@@ -392,6 +393,29 @@ class AppState:
         if not self.telnet:
             return False
         return await self.telnet.send(cmd)
+
+    async def start_demo(self) -> None:
+        """Set up a mock receiver for development without a physical AVR.
+
+        Used when DENON_DASHBOARD_DEMO_MODE=true. Installs a MockDenonClient as
+        the telnet client; no HEOS client is created (media state stays the empty
+        default), and no real network connection is attempted.
+        """
+        from denon.mock_client import MockDenonClient
+
+        async with self.locked():
+            mock = MockDenonClient()
+            self.telnet = mock  # assign before connect so build_status() works
+
+            async def _on_state_change(state: dict[str, Any]) -> None:
+                await self.broadcast_state()
+
+            mock.on_state_change(_on_state_change)
+            await mock.connect()
+
+        # force=True so the first broadcast goes out even though no client is
+        # connected yet (build_status would otherwise equal the empty cache).
+        await self.broadcast_state(force=True)
 
     async def _on_heos_event(self, event: dict[str, Any]) -> None:
         """Handle unsolicited HEOS events to update media state."""

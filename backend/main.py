@@ -108,7 +108,10 @@ async def lifespan(app: FastAPI):
     night_mode_task: asyncio.Task | None = asyncio.create_task(_night_mode_scheduler())
 
     host = settings.denon_host
-    if host:
+    if settings.demo_mode:
+        _LOGGER.info("Demo mode enabled — using mock receiver (no real AVR needed)")
+        await app_state.start_demo()
+    elif host:
         _LOGGER.info("Connecting to configured host %s...", host)
         await app_state.connect_to_host(host)
         # Preload radio stations in background

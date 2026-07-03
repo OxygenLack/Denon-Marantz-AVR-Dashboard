@@ -46,6 +46,9 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # Demo mode: simulate a receiver without a real connection (no AVR needed)
+    demo_mode: bool = False
+
     @property
     def source_name_map(self) -> dict[str, str]:
         try:

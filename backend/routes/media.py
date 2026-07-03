@@ -173,6 +173,53 @@ async def delete_radio_favorite(mid: str, state: AppState = Depends(get_app_stat
     return {"ok": True, "favorites": state.radio_favorites}
 
 
+@router.get("/radio/status")
+async def radio_status(state: AppState = Depends(get_app_state)):
+    """Diagnose whether internet radio (TuneIn) is usable.
+
+    Drives the WebUI guidance panel. ``reason`` is one of:
+      - ``ok``                 — TuneIn ready (or stations already cached)
+      - ``no_heos``            — receiver's HEOS service unreachable
+      - ``signed_out``         — no HEOS account signed in on the receiver
+      - ``tunein_unavailable`` — signed in, but TuneIn not available yet
+    """
+    if not state.heos:
+        return {
+            "ready": False, "reason": "no_heos", "heos_connected": False,
+            "account_signed_in": False, "username": None,
+            "tunein_available": False, "cached_stations": _cached_station_count,
+        }
+
+    acct = await state.heos.check_account()
+    signed_in = bool(acct.get("signed_in"))
+    reachable = bool(acct.get("reachable"))
+    tunein = await state.heos.is_source_available(TUNEIN_SID)
+
+    # A populated cache means the UI works regardless of a transient probe.
+    if _cached_station_count > 0:
+        reason = "ok"
+    elif not reachable:
+        reason = "no_heos"
+    elif not signed_in:
+        reason = "signed_out"
+    elif tunein is False:
+        reason = "tunein_unavailable"
+    elif tunein is None:
+        reason = "no_heos"
+    else:
+        reason = "ok"
+
+    return {
+        "ready": reason == "ok",
+        "reason": reason,
+        "heos_connected": state.heos.connected,
+        "account_signed_in": signed_in,
+        "username": acct.get("username"),
+        "tunein_available": bool(tunein),
+        "cached_stations": _cached_station_count,
+    }
+
+
 @router.get("/radio/browse")
 async def radio_browse(cid: str | None = None, state: AppState = Depends(get_app_state)):
     """Browse TuneIn radio directory. Omit cid for top-level categories."""

@@ -145,7 +145,7 @@ class HeosClient:
                 self._pending_commands.append((cmd, fut))
                 
                 _LOGGER.debug("HEOS TX: %s", url)
-                self._writer.write(f"{url}\\r\\n".encode())
+                self._writer.write(f"{url}\r\n".encode())
                 await self._writer.drain()
             except Exception as exc:
                 _LOGGER.warning("HEOS command send error (%s): %s", cmd, exc)
@@ -210,12 +210,45 @@ class HeosClient:
             return resp["payload"]
         return []
 
+    async def check_account(self) -> dict[str, Any]:
+        """Check HEOS account sign-in state.
+
+        Returns {'signed_in': bool, 'username': str|None, 'reachable': bool}.
+        A signed-out receiver makes every cloud source (TuneIn, Tidal, …)
+        unavailable, so radio browse silently returns nothing. ``reachable``
+        is False when the command itself timed out / errored.
+        """
+        resp = await self._command("system/check_account", timeout=5.0)
+        if not resp:
+            return {"signed_in": False, "username": None, "reachable": False}
+        msg = resp.get("heos", {}).get("message", "")
+        if msg.startswith("signed_in"):
+            username = None
+            for part in msg.split("&"):
+                if part.startswith("un="):
+                    username = part[3:]
+            return {"signed_in": True, "username": username, "reachable": True}
+        return {"signed_in": False, "username": None, "reachable": True}
+
+    async def is_source_available(self, sid: int) -> bool | None:
+        """Whether a music source (by sid) is currently available.
+
+        None when the source list couldn't be fetched (receiver unreachable).
+        """
+        sources = await self.get_music_sources()
+        if not sources:
+            return None
+        for s in sources:
+            if s.get("sid") == sid:
+                return str(s.get("available", "")).lower() == "true"
+        return False
+
     async def browse_source(self, sid: int, cid: str | None = None) -> dict[str, Any]:
         """Browse a HEOS music source. Returns {items, count, returned}."""
         empty = {"items": [], "count": 0, "returned": 0}
         
         # Prevent HEOS command injection via cid parameter
-        if cid and ('\\r' in cid or '\\n' in cid or len(cid) > 1000):
+        if cid and ('\r' in cid or '\n' in cid or len(cid) > 1000):
             _LOGGER.warning("Invalid cid rejected (injection or length)")
             return {**empty, "_debug": "invalid_cid"}
             
@@ -249,7 +282,7 @@ class HeosClient:
         
         if not items:
             result["_debug"] = "no_items"
-            safe_cid = (cid or "None").replace('\\n', '\\\\n').replace('\\r', '\\\\r')[:80]
+            safe_cid = (cid or "None").replace('\n', '\\n').replace('\r', '\\r')[:80]
             _LOGGER.warning("HEOS browse returned 0 items for cid=%s", safe_cid)
             
         return result
@@ -260,7 +293,7 @@ class HeosClient:
             return False
             
         # Prevent HEOS command injection via mid parameter
-        if not mid or '\\r' in mid or '\\n' in mid or len(mid) > 500:
+        if not mid or '\r' in mid or '\n' in mid or len(mid) > 500:
             _LOGGER.warning("Invalid mid rejected (injection or length)")
             return False
             

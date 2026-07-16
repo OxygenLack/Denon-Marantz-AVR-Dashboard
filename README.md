@@ -2,7 +2,7 @@
 
 A modern, real-time web dashboard for controlling Denon/Marantz AVR receivers and Android TV / Google TV devices. Built with React + FastAPI, communicates with receivers via **telnet** (port 23) and **HEOS CLI** (port 1255), and with Android TV devices via **Android TV Remote protocol v2**.
 
-[![Build](https://github.com/mondychan/Denon-Marantz-AVR-Dashboard/actions/workflows/docker.yml/badge.svg)](https://github.com/mondychan/Denon-Marantz-AVR-Dashboard/actions/workflows/docker.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![React 19](https://img.shields.io/badge/React-19-61dafb) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688) ![Docker](https://img.shields.io/badge/Docker-ready-2496ed)
+[![Build](https://github.com/mondychan/Denon-Marantz-AVR-Dashboard/actions/workflows/docker.yml/badge.svg)](https://github.com/mondychan/Denon-Marantz-AVR-Dashboard/actions/workflows/docker.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![React 19](https://img.shields.io/badge/React-19-61dafb) ![Vite 6](https://img.shields.io/badge/Vite-6-646cff) ![FastAPI](https://img.shields.io/badge/FastAPI-0.138-009688) ![Python 3.13](https://img.shields.io/badge/Python-3.13-3776ab) ![Docker](https://img.shields.io/badge/Docker-ready-2496ed)
 
 > **Disclaimer:** This is an unofficial, community-developed project. Not affiliated with or endorsed by Denon, Marantz, or Sound United/Masimo. All product names and trademarks are the property of their respective owners.
 

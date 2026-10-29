@@ -69,14 +69,19 @@ Add a sleep timer row below the volume/mute controls:
 ┌─ Zone 2 ────────────────────────────────────┐
 │  ...existing controls...                     │
 │                                              │
-│  Sleep Timer:  [ 30 min ▼ ]  [Set] [Off]    │
+│  Sleep Timer:  [ 30 min ▼ ]  (applies on    │
+│                               selection)     │
 │  (shows "Off" when None, countdown when set) │
 └──────────────────────────────────────────────┘
 ```
 
-- Dropdown: OFF, 10, 20, 30, 60, 90, 120 min
-- Send `Z2SLP<minutes>` or `Z2SLPOFF` via WebSocket command
-- Display current value from `state.z2_sleep_timer`
+- Dropdown: Off, 10, 20, 30, 60, 90, 120 min (shared `SleepTimerSelect`, also
+  used by the main zone in Audio Settings)
+- **Applies on change** — there is no separate "Set" button any more. Picking
+  an entry sends `Z2SLP<minutes>` or `Z2SLPOFF` via WebSocket command at once.
+- Display current value from `state.z2_sleep_timer`. A value that is not a
+  preset (e.g. 45 min set on the remote, or a running countdown) is added as
+  its own option and shown as selected.
 
 ## Files to Modify
 

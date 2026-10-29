@@ -1,37 +1,36 @@
-import type { ReceiverState, SendCommandFn, PostFn, Zone } from '../types'
+import type { ReceiverState, PostFn, Zone } from '../types'
+import { safeImageUrl } from './radio/constants'
 
-const MEDIA_SOURCES = ['NET', 'MPLAY', 'BT', 'USB', 'USB/IPOD', 'SPOTIFY', 'PANDORA', 'SIRIUSXM', 'IRADIO', 'SERVER', 'FAVORITES']
 const VALID_ACTIONS = new Set(['play', 'pause', 'stop', 'next', 'previous'])
-
-/** Sanitize album art URL — only allow http(s) to prevent XSS via javascript: or data: URIs. */
-function safeImageUrl(url: string | undefined): string | null {
-  if (!url || typeof url !== 'string') return null
-  try {
-    const parsed = new URL(url)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? parsed.href : null
-  } catch { return null }
-}
 
 interface Props {
   state: ReceiverState
-  sendCommand: SendCommandFn
   post: PostFn
+  /** Inputs the HEOS transport drives (from /device.media_sources). */
+  mediaSources: string[]
   zone?: Zone
 }
 
-export default function MediaControls({ state, zone = 'main' }: Props) {
+function playStateLabel(playState: string | undefined): string {
+  if (playState === 'play') return '▶ Playing'
+  if (playState === 'stop') return '■ Stopped'
+  return '⏸ Paused'
+}
+
+export const HEOS_OFFLINE_HINT = 'Media control unavailable - HEOS not connected'
+
+export default function MediaControls({ state, post, mediaSources, zone = 'main' }: Props) {
   const source = zone === 'main' ? state?.source : state?.z2_source
-  const mediaCapable = source != null && MEDIA_SOURCES.includes(source)
+  const mediaCapable = source != null && mediaSources.includes(source)
+  const heosDown = state?.heos_connected === false
 
   // Now-playing data comes from WebSocket state (backend polls HEOS once for all clients)
   const nowPlaying = state?.now_playing
   const playState = state?.play_state
 
-  const doMedia = async (action: string) => {
-    if (!VALID_ACTIONS.has(action)) return
-    try {
-      await fetch(`/api/v1/media/${action}`, { method: 'POST' })
-    } catch { /* ignore */ }
+  const doMedia = (action: string) => {
+    if (!VALID_ACTIONS.has(action) || heosDown) return
+    void post(`/media/${action}`)  // failures toast inside post()
   }
 
   if (!mediaCapable) return null
@@ -71,7 +70,7 @@ export default function MediaControls({ state, zone = 'main' }: Props) {
                 ? 'bg-denon-green/10 text-denon-green'
                 : 'bg-denon-surface text-denon-text'
             }`}>
-              {isPlaying ? '▶ Playing' : '⏸ Paused'}
+              {playStateLabel(playState)}
             </span>
             {streamQuality && (
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-denon-surface text-denon-text">
@@ -83,10 +82,11 @@ export default function MediaControls({ state, zone = 'main' }: Props) {
       )}
 
       {/* Transport Controls */}
-      <div className="flex items-center justify-center gap-3">
+      <div className={`flex items-center justify-center gap-3 ${heosDown ? 'opacity-40' : ''}`}>
         <button
           onClick={() => doMedia('previous')}
-          className="w-11 h-11 rounded-xl bg-denon-surface/70 text-denon-muted hover:text-denon-text hover:bg-denon-surface transition-all active:scale-95 flex items-center justify-center"
+          disabled={heosDown}
+          className="w-11 h-11 rounded-xl bg-denon-surface/70 text-denon-muted hover:text-denon-text hover:bg-denon-surface transition-all active:scale-95 flex items-center justify-center disabled:cursor-not-allowed"
           title="Previous"
         >
           <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
@@ -96,7 +96,8 @@ export default function MediaControls({ state, zone = 'main' }: Props) {
 
         <button
           onClick={() => doMedia(isPlaying ? 'pause' : 'play')}
-          className="w-14 h-14 rounded-2xl bg-gradient-to-br from-denon-gold to-amber-600 text-denon-dark shadow-lg shadow-denon-gold/25 hover:brightness-110 transition-all active:scale-95 flex items-center justify-center"
+          disabled={heosDown}
+          className="disabled:cursor-not-allowed w-14 h-14 rounded-2xl bg-gradient-to-br from-denon-gold to-amber-600 text-denon-dark shadow-lg shadow-denon-gold/25 hover:brightness-110 transition-all active:scale-95 flex items-center justify-center"
           title={isPlaying ? 'Pause' : 'Play'}
         >
           {isPlaying ? (
@@ -112,7 +113,8 @@ export default function MediaControls({ state, zone = 'main' }: Props) {
 
         <button
           onClick={() => doMedia('next')}
-          className="w-11 h-11 rounded-xl bg-denon-surface/70 text-denon-muted hover:text-denon-text hover:bg-denon-surface transition-all active:scale-95 flex items-center justify-center"
+          disabled={heosDown}
+          className="w-11 h-11 rounded-xl bg-denon-surface/70 text-denon-muted hover:text-denon-text hover:bg-denon-surface transition-all active:scale-95 flex items-center justify-center disabled:cursor-not-allowed"
           title="Next"
         >
           <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
@@ -120,6 +122,9 @@ export default function MediaControls({ state, zone = 'main' }: Props) {
           </svg>
         </button>
       </div>
+      {heosDown && (
+        <p className="text-center text-xs text-denon-muted mt-3">{HEOS_OFFLINE_HINT}</p>
+      )}
     </div>
   )
 }

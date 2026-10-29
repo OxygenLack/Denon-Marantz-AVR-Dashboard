@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+# Highest target the pinned ruff (requirements-dev.txt) supports; the runtime
+# image is python:3.15-slim.
+target-version = "py315"
+extend-exclude = ["venv*", ".venv*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+# B008: FastAPI's `Depends()` in defaults is the framework idiom.
+# E501: line length is a formatting concern, not enforced here.
+ignore = ["B008", "E501"]

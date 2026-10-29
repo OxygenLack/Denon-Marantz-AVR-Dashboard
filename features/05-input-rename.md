@@ -76,6 +76,13 @@ Go with **Option A** — it's a purely visual override, no API involved. The loc
 
 Long-press or right-click a source name → "Reset to default" option that removes the localStorage entry for that source.
 
+**Current behaviour (2026-10):** names persist server-side (`/api/v1/source-names`),
+not in localStorage. Reset gestures are **edit-mode only**: in rename mode (✏️) a
+renamed tile shows a separate **Reset** button (keyboard-reachable, labelled with
+the default name from `/device` `sources[].default_name`), and right-click or
+long-press on the tile also resets. Outside rename mode right-click and
+long-press do nothing, so a stray long-press can no longer drop a custom name.
+
 ### Zone 2
 
 Same edit functionality in Zone2Controls source selector. Both zones share the same localStorage key (a source is the same physical input regardless of zone).

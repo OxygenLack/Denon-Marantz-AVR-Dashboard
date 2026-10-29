@@ -17,3 +17,9 @@ dist/
 *.log
 .DS_Store
 IP_Protocol_AVR-Xx100.pdf
+
+# Local agent tooling and /brag output
+brag-output/
+.agents/
+.claude/
+skills-lock.json

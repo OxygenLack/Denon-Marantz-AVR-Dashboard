@@ -1,36 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { DeviceInfo } from '../types'
+import { useApi } from './useApi'
 
-export function useDeviceInfo(): {
-  info: DeviceInfo | null
-  loading: boolean
-  refresh: () => void
-  reload: () => void
-} {
+/** GET /api/v1/device on mount; `reload()` re-fetches (after a save). */
+export function useDeviceInfo(): { info: DeviceInfo | null; reload: () => Promise<void> } {
+  const { get } = useApi()
   const [info, setInfo] = useState<DeviceInfo | null>(null)
-  const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    fetch('/api/v1/device')
-      .then(r => r.json())
-      .then((data: DeviceInfo) => { setInfo(data); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
+  const reload = useCallback(async (): Promise<void> => {
+    const res = await get<DeviceInfo>('/device')
+    if (res.ok && res.data) setInfo(res.data)
+  }, [get])
 
-  const refresh = (): void => {
-    fetch('/api/v1/refresh', { method: 'POST' })
-      .then(() => fetch('/api/v1/device'))
-      .then(r => r.json())
-      .then((data: DeviceInfo) => setInfo(data))
-      .catch(() => {})
-  }
+  useEffect(() => { void reload() }, [reload])
 
-  const reload = (): void => {
-    fetch('/api/v1/device')
-      .then(r => r.json())
-      .then((data: DeviceInfo) => setInfo(data))
-      .catch(() => {})
-  }
-
-  return { info, loading, refresh, reload }
+  return { info, reload }
 }

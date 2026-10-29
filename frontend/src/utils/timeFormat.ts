@@ -44,10 +44,6 @@ export function formatTimeLabel(value: string | null | undefined, format: '24h' 
   return `${h12}:${minute} ${suffix}`
 }
 
-export function formatTimeInput(value: string | null | undefined, format: '24h' | '12h' = '24h'): string {
-  return formatTimeLabel(value, format)
-}
-
 export function parseTimeInput(input: string | null | undefined, fallback = '00:00'): string {
   const raw = String(input || '').trim().toUpperCase().replace(/\s+/g, ' ')
   if (!raw) return fallback

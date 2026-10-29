@@ -4,6 +4,19 @@
 
 Add global keyboard shortcuts for common actions. Active when the browser tab has focus (not when typing in an input field).
 
+### Guards (current behaviour, 2026-10)
+
+A key is ignored, so the browser or the focused element keeps it, when:
+
+- a modifier is held (`Ctrl`, `Cmd`/`Meta`, `Alt`) — `Cmd+P` prints, `Ctrl+M` does not mute;
+- it is a key repeat (`e.repeat`) — holding `m` toggles mute once;
+- any modal is open (`[data-modal]`, set by `ModalShell` for Night Mode and the radio browser);
+- the target is an input, textarea, select or a contenteditable element;
+- it is `Space` on a focused button — the button gets activated, playback is not toggled.
+
+The listener is registered once (`[]` deps) and reads the latest state, zone and
+callbacks from a ref, instead of re-registering on every WebSocket push.
+
 ## Shortcuts
 
 | Key | Action | Context |

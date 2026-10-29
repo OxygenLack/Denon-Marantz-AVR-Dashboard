@@ -1,32 +1,19 @@
-import { useState, useMemo, useRef, useCallback } from 'react'
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { getModeInfo } from '../data/soundModeInfo'
 import ModeInfoPopover from './ModeInfoPopover'
 import ModeInfoPanel from './ModeInfoPanel'
 import ModeSignal from '../experience/ModeSignal'
-import type { ReceiverState, SendCommandFn, SurroundModeEntry } from '../types'
+import SegmentedControl from './SegmentedControl'
+import type { ReceiverState, SendCommandFn, SurroundCategory, SurroundModeEntry } from '../types'
 
-interface Category {
+/** One button in the "Available Sound Modes" grid, from either mode source. */
+interface ModeButton {
+  key: string
   label: string
-  command: string
-  code: string
+  playing: boolean
+  hasInfo: boolean
+  select: () => void
 }
-
-/* Category cycling commands */
-const CATEGORIES: Category[] = [
-  { label: 'Movie', command: 'MOVIE', code: 'MOV' },
-  { label: 'Music', command: 'MUSIC', code: 'MUS' },
-  { label: 'Game',  command: 'GAME',  code: 'GAM' },
-  { label: 'Pure',  command: 'DIRECT', code: 'PUR' },
-]
-
-/* Fallback modes for receivers that don't send OPSMLALL */
-const FALLBACK_MODES = [
-  'STEREO', 'DIRECT', 'PURE DIRECT',
-  'DOLBY SURROUND', 'DOLBY DIGITAL', 'DOLBY ATMOS',
-  'DTS SURROUND', 'DTS:X', 'MCH STEREO',
-  'ROCK ARENA', 'JAZZ CLUB', 'MONO MOVIE',
-  'MATRIX', 'VIDEO GAME', 'VIRTUAL',
-]
 
 function normalizeModeName(name: string | undefined): string {
   return (name || '')
@@ -72,16 +59,19 @@ function currentModeAliases(current: string | undefined): Set<string> {
 interface Props {
   state: ReceiverState
   sendCommand: SendCommandFn
+  /** Cycle tabs (from /device.surround_categories). */
+  categories: SurroundCategory[]
+  /** Mode list for receivers that don't send OPSMLALL (from /device.surround_modes). */
+  fallbackModes: string[]
 }
 
-export default function SurroundMode({ state, sendCommand }: Props) {
+export default function SurroundMode({ state, sendCommand, categories, fallbackModes }: Props) {
   const current = state?.surround_mode
   const modeList = state?.surround_mode_list
   const hasModeList = Boolean(modeList && modeList.length > 0)
 
   const [expandedCat, setExpandedCat] = useState<string | null>(null)
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const expandedRef = useRef<string | null>(null) // tracks if category was already expanded
 
   /* Info feature state */
   const [infoMode, setInfoMode] = useState(false)
@@ -90,13 +80,16 @@ export default function SurroundMode({ state, sendCommand }: Props) {
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const buttonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
 
+  // The card unmounts on every section switch: drop pending timers with it.
+  useEffect(() => () => {
+    if (collapseTimer.current) clearTimeout(collapseTimer.current)
+    clearTimeout(hoverTimerRef.current)
+  }, [])
+
   /* Reset the 3-second auto-collapse timer */
   const resetCollapseTimer = useCallback(() => {
     if (collapseTimer.current) clearTimeout(collapseTimer.current)
-    collapseTimer.current = setTimeout(() => {
-      setExpandedCat(null)
-      expandedRef.current = null
-    }, 3000)
+    collapseTimer.current = setTimeout(() => setExpandedCat(null), 3000)
   }, [])
 
   /* Modes grouped by category */
@@ -126,11 +119,11 @@ export default function SurroundMode({ state, sendCommand }: Props) {
   const currentAliases = useMemo(() => currentModeAliases(current), [current])
 
   const fallbackModesWithCurrent = useMemo(() => {
-    if (!current) return FALLBACK_MODES
-    const normalizedFallbacks = new Set(FALLBACK_MODES.map(normalizeModeName))
+    if (!current) return fallbackModes
+    const normalizedFallbacks = new Set(fallbackModes.map(normalizeModeName))
     const hasMatch = [...currentAliases].some(alias => normalizedFallbacks.has(alias))
-    return hasMatch ? FALLBACK_MODES : [current, ...FALLBACK_MODES]
-  }, [current, currentAliases])
+    return hasMatch ? fallbackModes : [current, ...fallbackModes]
+  }, [current, currentAliases, fallbackModes])
 
   /* Check if a mode is the currently playing one */
   const isPlaying = (mode: SurroundModeEntry): boolean => {
@@ -150,10 +143,9 @@ export default function SurroundMode({ state, sendCommand }: Props) {
   }
 
   /* Handle cycle button click */
-  const onCycleClick = (cat: Category) => {
+  const onCycleClick = (cat: SurroundCategory) => {
     resetCollapseTimer()
     setExpandedCat(cat.code)
-    expandedRef.current = cat.code
 
     // Always send the cycle command — the receiver handles
     // "first press = display only" behavior on its own
@@ -172,6 +164,23 @@ export default function SurroundMode({ state, sendCommand }: Props) {
     }
   }
 
+  /* One list for both sources: OPSMLALL entries or the fallback names */
+  const modeButtons: ModeButton[] = hasModeList
+    ? uniqueModes.map(mode => ({
+        key: mode.display_name,
+        label: mode.display_name,
+        playing: isPlaying(mode),
+        hasInfo: !!getModeInfo(mode.display_name),
+        select: () => onModeClick(mode),
+      }))
+    : fallbackModesWithCurrent.map(name => ({
+        key: name,
+        label: name,
+        playing: currentAliases.has(normalizeModeName(name)),
+        hasInfo: !!getModeInfo(name),
+        select: () => sendCommand(`MS${name}`),
+      }))
+
   /* Get the expanded category's mode list with current/next indicators */
   const expandedModes = expandedCat ? (modesByCategory[expandedCat] || []) : []
   const activeIdx = expandedModes.findIndex(m => isPlaying(m))
@@ -182,21 +191,17 @@ export default function SurroundMode({ state, sendCommand }: Props) {
       {/* Cycle Modes */}
       <div className="card">
         <h2 className="text-sm font-medium text-denon-muted mb-3">Cycle Modes</h2>
-        <div className="grid grid-cols-4 gap-2">
-          {CATEGORIES.map(cat => (
-            <button
-              key={cat.command}
-              onClick={() => onCycleClick(cat)}
-              className={`py-2.5 px-3 rounded-xl text-xs font-medium transition-all ${
-                expandedCat === cat.code
-                  ? 'bg-denon-surface text-denon-gold border border-denon-gold/30'
-                  : 'bg-denon-surface/70 text-denon-text hover:bg-denon-surface hover:scale-[1.02] active:scale-[0.98]'
-              }`}
-            >
-              {cat.label}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          label="Cycle mode category"
+          grow
+          variant="soft"
+          options={categories.map(cat => ({ value: cat.code, label: cat.label }))}
+          value={expandedCat}
+          onChange={code => {
+            const cat = categories.find(c => c.code === code)
+            if (cat) onCycleClick(cat)
+          }}
+        />
 
         {/* Expanded cycle order */}
         {expandedCat && expandedModes.length > 0 && (
@@ -255,91 +260,44 @@ export default function SurroundMode({ state, sendCommand }: Props) {
         </div>
         <ModeSignal mode={current} />
         <div className="grid grid-cols-2 gap-2">
-          {hasModeList ? (
-            uniqueModes.map(mode => {
-              const playing = isPlaying(mode)
-              const hasInfo = !!getModeInfo(mode.display_name)
-              return (
-                <button
-                  key={mode.display_name}
-                  ref={el => { buttonRefs.current[mode.display_name] = el }}
-                  onClick={() => {
-                    if (infoMode && hasInfo) {
-                      setSelectedInfoMode(prev => prev === mode.display_name ? null : mode.display_name)
-                    } else {
-                      onModeClick(mode)
-                    }
-                  }}
-                  onMouseEnter={() => {
-                    if (hasInfo) {
-                      hoverTimerRef.current = setTimeout(() => setHoveredMode(mode.display_name), 300)
-                    }
-                  }}
-                  onMouseLeave={() => {
-                    clearTimeout(hoverTimerRef.current)
-                    setHoveredMode(null)
-                  }}
-                  className={`group relative py-2.5 px-3 rounded-xl text-xs font-medium transition-all text-left overflow-hidden ${
-                    playing
-                      ? 'bg-gradient-to-br from-denon-gold/20 to-amber-500/10 text-denon-gold ring-1 ring-denon-gold/40'
-                      : infoMode && hasInfo
-                        ? 'bg-denon-surface/70 text-denon-text ring-1 ring-denon-gold/20 hover:ring-denon-gold/40 hover:scale-[1.02] active:scale-[0.98]'
-                        : 'bg-denon-surface/70 text-denon-text hover:bg-denon-surface hover:scale-[1.02] active:scale-[0.98]'
-                  }`}
-                >
-                  {mode.display_name}
-                  {playing && !infoMode && (
-                    <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-denon-gold" />
-                  )}
-                  {infoMode && hasInfo && (
-                    <span className="absolute top-1 right-1.5 text-[8px] text-denon-muted">ⓘ</span>
-                  )}
-                </button>
-              )
-            })
-          ) : (
-            fallbackModesWithCurrent.map(modeName => {
-              const playing = currentAliases.has(normalizeModeName(modeName))
-              const hasInfo = !!getModeInfo(modeName)
-              return (
-                <button
-                  key={modeName}
-                  ref={el => { buttonRefs.current[modeName] = el }}
-                  onClick={() => {
-                    if (infoMode && hasInfo) {
-                      setSelectedInfoMode(prev => prev === modeName ? null : modeName)
-                    } else {
-                      sendCommand(`MS${modeName}`)
-                    }
-                  }}
-                  onMouseEnter={() => {
-                    if (hasInfo) {
-                      hoverTimerRef.current = setTimeout(() => setHoveredMode(modeName), 300)
-                    }
-                  }}
-                  onMouseLeave={() => {
-                    clearTimeout(hoverTimerRef.current)
-                    setHoveredMode(null)
-                  }}
-                  className={`group relative py-2.5 px-3 rounded-xl text-xs font-medium transition-all text-left overflow-hidden ${
-                    playing
-                      ? 'bg-gradient-to-br from-denon-gold/20 to-amber-500/10 text-denon-gold ring-1 ring-denon-gold/40'
-                      : infoMode && hasInfo
-                        ? 'bg-denon-surface/70 text-denon-text ring-1 ring-denon-gold/20 hover:ring-denon-gold/40 hover:scale-[1.02] active:scale-[0.98]'
-                        : 'bg-denon-surface/70 text-denon-text hover:bg-denon-surface hover:scale-[1.02] active:scale-[0.98]'
-                  }`}
-                >
-                  {modeName}
-                  {playing && !infoMode && (
-                    <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-denon-gold" />
-                  )}
-                  {infoMode && hasInfo && (
-                    <span className="absolute top-1 right-1.5 text-[8px] text-denon-muted">ⓘ</span>
-                  )}
-                </button>
-              )
-            })
-          )}
+          {modeButtons.map(mode => (
+            <button
+              key={mode.key}
+              ref={el => { buttonRefs.current[mode.key] = el }}
+              aria-pressed={mode.playing}
+              onClick={() => {
+                if (infoMode && mode.hasInfo) {
+                  setSelectedInfoMode(prev => prev === mode.key ? null : mode.key)
+                } else {
+                  mode.select()
+                }
+              }}
+              onMouseEnter={() => {
+                if (mode.hasInfo) {
+                  hoverTimerRef.current = setTimeout(() => setHoveredMode(mode.key), 300)
+                }
+              }}
+              onMouseLeave={() => {
+                clearTimeout(hoverTimerRef.current)
+                setHoveredMode(null)
+              }}
+              className={`group relative py-2.5 px-3 rounded-xl text-xs font-medium transition-all text-left overflow-hidden ${
+                mode.playing
+                  ? 'bg-gradient-to-br from-denon-gold/20 to-amber-500/10 text-denon-gold ring-1 ring-denon-gold/40'
+                  : infoMode && mode.hasInfo
+                    ? 'bg-denon-surface/70 text-denon-text ring-1 ring-denon-gold/20 hover:ring-denon-gold/40 hover:scale-[1.02] active:scale-[0.98]'
+                    : 'bg-denon-surface/70 text-denon-text hover:bg-denon-surface hover:scale-[1.02] active:scale-[0.98]'
+              }`}
+            >
+              {mode.label}
+              {mode.playing && !infoMode && (
+                <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-denon-gold" />
+              )}
+              {infoMode && mode.hasInfo && (
+                <span className="absolute top-1 right-1.5 text-[8px] text-denon-muted">ⓘ</span>
+              )}
+            </button>
+          ))}
         </div>
 
         {/* Mobile info panel (shown when info mode toggle is active) */}

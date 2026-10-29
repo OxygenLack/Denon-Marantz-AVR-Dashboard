@@ -1,4 +1,6 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useCallback } from 'react'
+import { useDebouncedLevel } from '../hooks/useDebouncedLevel'
+import { TRIM, formatDb } from '../protocol'
 import type { ReceiverState, PostFn } from '../types'
 
 interface Props {
@@ -7,42 +9,29 @@ interface Props {
 }
 
 export default function SubwooferLevel({ state, post }: Props) {
-  const [level, setLevel] = useState<number>(state?.subwoofer_level ?? 50)
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    if (state?.subwoofer_level != null) setLevel(state.subwoofer_level)
-  }, [state?.subwoofer_level])
-
-  const dB = (val: number | null | undefined): string => {
-    if (val == null) return '—'
-    const d = val - 50
-    if (d > 0) return `+${d}`
-    return `${d}`
-  }
-
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseInt(e.target.value)
-    setLevel(v)
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => post('/subwoofer-level', { level: v, index: 1 }), 200)
-  }, [post])
+  const send = useCallback((level: number) => post('/subwoofer-level', { level, index: 1 }), [post])
+  const { value, onChange } = useDebouncedLevel(state.subwoofer_level, send)
 
   return (
     <div className="card">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-medium text-denon-muted">Subwoofer Level</h2>
-        <span className="text-xs tabular-nums text-denon-text">{dB(level)} dB</span>
+        <span className="text-xs tabular-nums text-denon-text">
+          {value != null ? `${formatDb(value, TRIM.zeroDb)} dB` : '—'}
+        </span>
       </div>
       <input
-        type="range" min={38} max={62} step={1}
-        value={level} onChange={handleChange}
+        type="range"
+        aria-label="Subwoofer level"
+        min={TRIM.min} max={TRIM.max} step={1}
+        value={value ?? TRIM.zeroDb}
+        onChange={e => onChange(parseInt(e.target.value, 10))}
         className="w-full"
       />
       <div className="flex justify-between text-xs text-denon-muted mt-1">
-        <span>−12 dB</span>
+        <span>{formatDb(TRIM.min, TRIM.zeroDb)} dB</span>
         <span>0 dB</span>
-        <span>+12 dB</span>
+        <span>{formatDb(TRIM.max, TRIM.zeroDb)} dB</span>
       </div>
     </div>
   )

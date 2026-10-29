@@ -1,4 +1,4 @@
-import { useState, useEffect, memo } from 'react'
+import { useState, useEffect, useCallback, memo } from 'react'
 import { getTheme, applyTheme } from './theme'
 import { useWebSocket } from './hooks/useWebSocket'
 import ReceiverSetup from './components/ReceiverSetup'
@@ -18,24 +18,21 @@ import AudioSettings from './components/AudioSettings'
 import MediaControls from './components/MediaControls'
 import Zone2Controls from './components/Zone2Controls'
 import CacheReset from './components/CacheReset'
+import ZoneTabs from './components/ZoneTabs'
+import SectionTabs, { type Section } from './components/SectionTabs'
 import AmbientBackground from './experience/AmbientBackground'
 import SeasonalEffects from './experience/SeasonalEffects'
 import ShortcutOverlay from './experience/ShortcutOverlay'
-import type { Zone, ThemeName, UiEffects, RadioFavorite } from './types'
-import type { NightModeConfigState } from './components/NightModeModal'
+import type { Zone, ThemeName, UiEffects, RadioFavorite, NightModeConfig, ApiResponse, SourceEntry, SurroundCategory } from './types'
 
-type Section = 'controls' | 'speakers' | 'audio'
-
-// Fallback channel names if API hasn't loaded yet
-const FALLBACK_CHANNEL_NAMES: Record<string, string> = {
-  FL: 'Front L', FR: 'Front R', C: 'Center', SW: 'Subwoofer',
-  SW2: 'Sub 2', SL: 'Surround L', SR: 'Surround R',
-  SBL: 'SB Left', SBR: 'SB Right', SB: 'SB',
-  FHL: 'Height L', FHR: 'Height R',
-  FWL: 'Wide L', FWR: 'Wide R',
-  TFL: 'Top F.L', TFR: 'Top F.R', TML: 'Top M.L', TMR: 'Top M.R',
-  TRL: 'Top R.L', TRR: 'Top R.R',
-}
+// Stable empty fallbacks, so memoized children do not re-render on every push
+const EMPTY_MAP: Record<string, string> = {}
+const EMPTY_LEVELS: Record<string, number> = {}
+const EMPTY_SOURCES: SourceEntry[] = []
+const EMPTY_FAVORITES: RadioFavorite[] = []
+const EMPTY_LIST: string[] = []
+const EMPTY_CATEGORIES: SurroundCategory[] = []
+const EMPTY_EFFECTS: Partial<UiEffects> = {}
 
 // Memoize heavy child components to avoid re-renders on every WebSocket push
 const MemoChannelLevels = memo(ChannelLevels)
@@ -49,30 +46,44 @@ const MemoMediaControls = memo(MediaControls)
 export default function App() {
   const { state, wsConnected, wsConnecting, sendCommand } = useWebSocket()
   const { info, reload: reloadDeviceInfo } = useDeviceInfo()
-  const { post } = useApi()
+  const { post, del } = useApi()
   const [zone, setZone] = useState<Zone>('main')
   useForegroundEffects()
   useKeyboardShortcuts({ state, post, sendCommand, zone, setZone })
   const [activeSection, setActiveSection] = useState<Section>('controls')
   const [currentTheme, setCurrentTheme] = useState<ThemeName>('gold')
 
-  // Apply theme whenever device info loads. Server-persisted theme is the default;
-  // localStorage remains a browser-local override for users who want it.
+  // Theme: the server-persisted theme wins (it rides on every WebSocket push and
+  // is re-broadcast on save, so a change on one device applies everywhere);
+  // /device covers the time before the first push. localStorage is only the
+  // fallback when the server has none (see getTheme).
+  const serverTheme = state?.theme ?? info?.theme
   useEffect(() => {
-    const t = getTheme(info?.theme)
+    const t = getTheme(serverTheme)
     applyTheme(t)
     setCurrentTheme(t)
-  }, [info?.theme])
+  }, [serverTheme])
 
-  // Live theme sync: the backend includes the persisted theme in every WebSocket
-  // state push and re-broadcasts on save, so a theme change on one device applies
-  // on all connected devices without a reload.
-  useEffect(() => {
-    if (!state?.theme) return
-    const t = getTheme(state.theme)
-    applyTheme(t)
-    setCurrentTheme(t)
-  }, [state?.theme])
+  const saveNightModeConfig = useCallback(async (config: NightModeConfig): Promise<ApiResponse> => {
+    const res = await post('/night-mode/config', config)
+    if (res.ok) await reloadDeviceInfo()
+    return res
+  }, [post, reloadDeviceInfo])
+
+  const saveRadioFavorite = useCallback(async (favorite: RadioFavorite, enabled: boolean): Promise<ApiResponse> => {
+    const res = enabled
+      ? await post('/media/radio/favorites', favorite)
+      : await del(`/media/radio/favorites/${encodeURIComponent(favorite.mid)}`)
+    if (res.ok) await reloadDeviceInfo()
+    return res
+  }, [post, del, reloadDeviceInfo])
+
+  const renameSource = useCallback(async (code: string, name: string | null): Promise<ApiResponse> => {
+    const path = `/source-names/${encodeURIComponent(code)}`
+    const res = name == null ? await del(path) : await post(path, { name })
+    if (res.ok) await reloadDeviceInfo()
+    return res
+  }, [post, del, reloadDeviceInfo])
 
   // Loading — waiting for first WebSocket message
   if (!state) {
@@ -113,7 +124,8 @@ export default function App() {
 
   // Discovery finished but no receiver found — show setup screen
   if (!state.connected) {
-    const reason = info?.receiver_ip === '0.0.0.0' ? 'no_host' : 'connect_failed'
+    // /device reports the configured-or-connected host, null when there is none.
+    const reason = info?.receiver_ip ? 'connect_failed' : 'no_host'
     return <ReceiverSetup reason={reason} onConnect={() => window.location.reload()} currentTheme={currentTheme} onThemeChange={setCurrentTheme} />
   }
 
@@ -121,54 +133,17 @@ export default function App() {
   const deviceName = info?.device_name || 'Denon AVR'
   const zoneName = info?.zone1_name || 'Main Zone'
   const z2Name = info?.zone2_name || 'Zone 2'
-  const channelNames = (info?.channel_names && Object.keys(info.channel_names).length > 0)
-    ? info.channel_names
-    : FALLBACK_CHANNEL_NAMES
-  const sourceNameMap = info?.source_name_map || {}
-  const sourceNameOverrides = info?.source_name_overrides || {}
-  const configuredSources = info?.sources || []
-  const radioFavorites = info?.radio_favorites || []
-  const uiEffects: Partial<UiEffects> = info?.ui_effects || {}
-
-  const saveNightModeConfig = async (config: NightModeConfigState): Promise<void> => {
-    const res = await fetch('/api/v1/night-mode/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    })
-    if (res.ok) reloadDeviceInfo()
-    else console.warn('Night mode config save failed', await res.text().catch(() => res.statusText))
-  }
-
-  const saveRadioFavorite = async (favorite: RadioFavorite, enabled: boolean): Promise<void> => {
-    const res = enabled
-      ? await fetch('/api/v1/media/radio/favorites', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(favorite),
-        })
-      : await fetch(`/api/v1/media/radio/favorites/${encodeURIComponent(favorite.mid)}`, { method: 'DELETE' })
-    if (res.ok) reloadDeviceInfo()
-    else console.warn('Radio favorite update failed', await res.text().catch(() => res.statusText))
-  }
-
-  const renameSource = async (code: string, name: string | null): Promise<void> => {
-    const res = name == null
-      ? await fetch(`/api/v1/source-names/${encodeURIComponent(code)}`, { method: 'DELETE' })
-      : await fetch(`/api/v1/source-names/${encodeURIComponent(code)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
-        })
-    if (res.ok) reloadDeviceInfo()
-    else console.warn('Source rename failed', await res.text().catch(() => res.statusText))
-  }
-
-  const mainSections: { id: Section; label: string }[] = [
-    { id: 'controls', label: 'Controls' },
-    { id: 'speakers', label: 'Speakers' },
-    { id: 'audio', label: 'Audio / EQ' },
-  ]
+  // Canonical speaker order and names come from /device (empty until loaded).
+  const channelNames = info?.channel_names ?? EMPTY_MAP
+  // Lists render only once /device has loaded; there is no built-in fallback.
+  const mediaSources = info?.media_sources ?? EMPTY_LIST
+  const surroundCategories = info?.surround_categories ?? EMPTY_CATEGORIES
+  const surroundModes = info?.surround_modes ?? EMPTY_LIST
+  const sourceNameMap = info?.source_name_map ?? EMPTY_MAP
+  const sourceNameOverrides = info?.source_name_overrides ?? EMPTY_MAP
+  const configuredSources = info?.sources ?? EMPTY_SOURCES
+  const radioFavorites = info?.radio_favorites ?? EMPTY_FAVORITES
+  const uiEffects: Partial<UiEffects> = info?.ui_effects ?? EMPTY_EFFECTS
 
   return (
     <>
@@ -185,7 +160,6 @@ export default function App() {
         state={state}
         wsConnected={wsConnected}
         wsConnecting={wsConnecting}
-        receiverIp={info?.receiver_ip}
         info={info}
         post={post}
         currentTheme={currentTheme}
@@ -194,53 +168,16 @@ export default function App() {
       />
 
       {/* Zone Selector (desktop; mobile uses the bottom nav) */}
-      <div className="hidden sm:flex gap-0 mb-5 bg-denon-card/50 rounded-2xl p-1.5 border border-denon-border/50 backdrop-blur-sm">
-        <button
-          onClick={() => setZone('main')}
-          className={`flex-1 py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 ${
-            zone === 'main'
-              ? 'bg-gradient-to-r from-denon-gold to-amber-500 text-denon-dark shadow-lg shadow-denon-gold/25'
-              : 'text-denon-muted hover:text-denon-text'
-          }`}
-        >
-          <span className="flex items-center justify-center gap-2">
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-            {zoneName}
-          </span>
-        </button>
-        <button
-          onClick={() => setZone('zone2')}
-          className={`flex-1 py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 ${
-            zone === 'zone2'
-              ? 'bg-gradient-to-r from-denon-gold to-amber-500 text-denon-dark shadow-lg shadow-denon-gold/25'
-              : 'text-denon-muted hover:text-denon-text'
-          }`}
-        >
-          <span className="flex items-center justify-center gap-2">
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
-            {z2Name}
-          </span>
-        </button>
+      <div className="hidden sm:block">
+        <ZoneTabs zone={zone} onChange={setZone} mainName={zoneName} zone2Name={z2Name} />
       </div>
 
       {/* Main Zone */}
       {zone === 'main' && (
         <>
           {/* Section tabs (desktop; mobile uses the bottom nav) */}
-          <div className="hidden sm:flex gap-1 mb-4">
-            {mainSections.map(s => (
-              <button
-                key={s.id}
-                onClick={() => setActiveSection(s.id)}
-                className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${
-                  activeSection === s.id
-                    ? 'bg-denon-surface text-denon-gold border border-denon-gold/30'
-                    : 'text-denon-muted hover:text-denon-text'
-                }`}
-              >
-                {s.label}
-              </button>
-            ))}
+          <div className="hidden sm:block">
+            <SectionTabs section={activeSection} onChange={setActiveSection} />
           </div>
 
           <div className="space-y-4 fade-in" key={activeSection}>
@@ -248,7 +185,7 @@ export default function App() {
               <>
                 <MemoPowerControl state={state} sendCommand={sendCommand} zone="main" />
                 <MemoVolumeControl state={state} sendCommand={sendCommand} post={post} />
-                <MemoMediaControls state={state} sendCommand={sendCommand} post={post} />
+                <MemoMediaControls state={state} post={post} mediaSources={mediaSources} />
                 <MemoSourceSelector
                   state={state}
                   sendCommand={sendCommand}
@@ -259,16 +196,20 @@ export default function App() {
                   onRenameSource={renameSource}
                   onRadioFavoriteChange={saveRadioFavorite}
                 />
-                <SurroundMode state={state} sendCommand={sendCommand} />
+                <SurroundMode
+                  state={state}
+                  sendCommand={sendCommand}
+                  categories={surroundCategories}
+                  fallbackModes={surroundModes}
+                />
               </>
             )}
 
             {activeSection === 'speakers' && (
               <>
                 <MemoChannelLevels
-                  channels={state.channel_volumes || {}}
+                  channels={state.channel_volumes ?? EMPTY_LEVELS}
                   channelNames={channelNames}
-                  sendCommand={sendCommand}
                   post={post}
                   calibration={state.speaker_calibration}
                 />
@@ -293,13 +234,13 @@ export default function App() {
             state={state}
             sendCommand={sendCommand}
             post={post}
+            mediaSources={mediaSources}
             sources={configuredSources}
             sourceNameMap={sourceNameMap}
             sourceNameOverrides={sourceNameOverrides}
             radioFavorites={radioFavorites}
             onRenameSource={renameSource}
             onRadioFavoriteChange={saveRadioFavorite}
-            zoneName={z2Name}
           />
         </div>
       )}
@@ -311,46 +252,10 @@ export default function App() {
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
       <div className="max-w-2xl mx-auto px-3 pt-2 pb-2 space-y-2">
-        {/* Zone toggle */}
-        <div className="flex gap-1">
-          <button
-            onClick={() => setZone('main')}
-            className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all ${
-              zone === 'main'
-                ? 'bg-gradient-to-r from-denon-gold to-amber-500 text-denon-dark'
-                : 'text-denon-muted hover:text-denon-text'
-            }`}
-          >
-            {zoneName}
-          </button>
-          <button
-            onClick={() => setZone('zone2')}
-            className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all ${
-              zone === 'zone2'
-                ? 'bg-gradient-to-r from-denon-gold to-amber-500 text-denon-dark'
-                : 'text-denon-muted hover:text-denon-text'
-            }`}
-          >
-            {z2Name}
-          </button>
-        </div>
+        <ZoneTabs zone={zone} onChange={setZone} mainName={zoneName} zone2Name={z2Name} compact />
         {/* Section tabs (main zone only) */}
         {zone === 'main' && (
-          <div className="flex gap-1">
-            {mainSections.map(s => (
-              <button
-                key={s.id}
-                onClick={() => setActiveSection(s.id)}
-                className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${
-                  activeSection === s.id
-                    ? 'bg-denon-surface text-denon-gold border border-denon-gold/30'
-                    : 'text-denon-muted hover:text-denon-text'
-                }`}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
+          <SectionTabs section={activeSection} onChange={setActiveSection} compact />
         )}
       </div>
     </nav>

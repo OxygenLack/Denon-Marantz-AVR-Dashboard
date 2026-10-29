@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import NightModeModal from './NightModeModal'
 import type { ReceiverState, DeviceInfo, PostFn } from '../types'
-import type { NightModeConfigState } from './NightModeModal'
+import type { NightModeConfigChange } from './NightModeModal'
 
 interface Props {
   state: ReceiverState | null | undefined
   info: DeviceInfo | null | undefined
   post: PostFn
-  onConfigChange?: (config: NightModeConfigState) => void | Promise<void>
+  onConfigChange?: NightModeConfigChange
 }
 
 export default function NightModeButton({ state, info, post, onConfigChange }: Props) {

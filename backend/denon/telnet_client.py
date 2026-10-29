@@ -3,36 +3,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from .const import (
-    CHANNEL_NAMES,
     COMMAND_INTERVAL,
-    COMMAND_PATTERN,
-    CV_0DB,
+    COMMAND_RE,
     DEFAULT_TELNET_PORT,
-    KNOWN_MODE_COMMANDS,
+    POLL_GAP,
     QUERY_COMMANDS,
-    SURROUND_CATEGORIES,
-    SWL_0DB,
     TELNET_HEARTBEAT_INTERVAL,
-    TELNET_MAX_RECONNECT,
     TELNET_RECONNECT_DELAY,
+    TELNET_RECONNECT_LOG_EVERY,
     TELNET_RECONNECT_MAX_DELAY,
+    TELNET_SUPERVISOR_INTERVAL,
     TELNET_TIMEOUT,
-    TONE_0DB,
-    VOLUME_0DB,
 )
+from .telnet_parser import TelnetParserMixin
 
 _LOGGER = logging.getLogger(__name__)
-
-# regex for channel volume lines: CV<CH> <VAL>
-_CV_RE = re.compile(r"^CV([A-Z0-9]+)\s+(\d+)$")
-
-# Strict validation for raw telnet commands (from shared constant)
-_COMMAND_RE = re.compile(COMMAND_PATTERN)
 
 # Prefixes whose payloads can reveal device topology / user-chosen labels.
 # Redacted in DEBUG RX logs so log scrapes never carry the receiver's friendly
@@ -47,8 +37,8 @@ def _redact_rx(line: str) -> str:
     return line
 
 
-class DenonTelnetClient:
-    """Async telnet client for Denon AVR."""
+class DenonTelnetClient(TelnetParserMixin):
+    """Async telnet client for Denon AVR. Line parsing lives in TelnetParserMixin."""
 
     def __init__(self, host: str, port: int = DEFAULT_TELNET_PORT) -> None:
         self.host = host
@@ -60,9 +50,17 @@ class DenonTelnetClient:
         self._connected = False
         self._listen_task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
-        self._reconnect_task: asyncio.Task | None = None
+        self._supervisor_task: asyncio.Task | None = None
         self._shutting_down = False
-        self._reconnecting = False
+        # Serialises writes so the COMMAND_INTERVAL gap holds between
+        # concurrent senders (route handlers, heartbeat, status poll).
+        self._send_lock = asyncio.Lock()
+
+        # link diagnostics (surfaced via `link_status` and /metrics)
+        self._reconnect_attempts = 0
+        self._connects_total = 0
+        self._last_connected_at: float | None = None
+        self._last_error: str | None = None
 
         # state
         self.state: dict[str, Any] = {
@@ -89,7 +87,6 @@ class DenonTelnetClient:
             "ref_level_offset": None,
             "sleep_timer": None,
             "eco_mode": None,
-            # Zone 2
             "sound_decoder": None,
             "surround_mode_list": [],
             # Zone 2
@@ -100,11 +97,19 @@ class DenonTelnetClient:
             "z2_source": None,
         }
 
-        # OPSMLALL accumulation buffer
+        # OPSMLALL accumulation buffer (see TelnetParserMixin._handle_opsmlall)
         self._opsmlall_buffer: list[dict] = []
+        self._opsmlall_overflow_logged = False
 
         # callbacks: list of async callables(state_dict)
         self._callbacks: list[Callable[[dict[str, Any]], Coroutine]] = []
+
+        # Notification coalescing. `_listen()` never awaits a callback: it marks
+        # the state dirty and a short-lived broadcaster task runs the callbacks.
+        # One slow WebSocket client used to freeze telnet reading for up to 5 s
+        # per line (the same class of bug as the fixed HEOS reader deadlock).
+        self._dirty = False
+        self._broadcaster: asyncio.Task | None = None
 
     # -- public api --
 
@@ -115,14 +120,49 @@ class DenonTelnetClient:
     def on_state_change(self, cb: Callable[[dict[str, Any]], Coroutine]) -> None:
         self._callbacks.append(cb)
 
-    async def connect(self) -> None:
-        """Connect to the receiver."""
+    @property
+    def link_status(self) -> dict[str, Any]:
+        """Diagnostics about the telnet link itself (not the receiver state)."""
+        return {
+            "connected": self._connected,
+            "host": self.host,
+            "port": self.port,
+            "supervised": self._supervisor_task is not None
+            and not self._supervisor_task.done(),
+            "reconnect_attempts": self._reconnect_attempts,
+            "connects_total": self._connects_total,
+            "last_connected_at": self._last_connected_at,
+            "last_error": self._last_error,
+        }
+
+    def start(self) -> None:
+        """Start the connection supervisor. Idempotent, never raises.
+
+        This is the entry point callers should use instead of a bare ``connect()``.
+        ``connect()`` is a one-shot that raises on failure; if the receiver happens
+        to be in standby at that moment there is nothing left to retry it, and the
+        link stays dead until the process restarts (real outage 2026-09-04 ->
+        2026-09-07, ~29 h of `Not connected, cannot send`).
+        """
         self._shutting_down = False
+        if self._supervisor_task is None or self._supervisor_task.done():
+            self._supervisor_task = asyncio.create_task(self._supervisor())
+
+    async def connect(self) -> None:
+        """Connect to the receiver once. Raises on failure.
+
+        Prefer `start()`, which calls this in a retry loop for the process lifetime.
+        """
+        self._shutting_down = False
+        await self._teardown_socket()
         try:
-            _LOGGER.info("Connecting to %s:%s", self.host, self.port)
+            _LOGGER.debug("Connecting to %s:%s", self.host, self.port)
             fut = asyncio.open_connection(self.host, self.port)
             self._reader, self._writer = await asyncio.wait_for(fut, timeout=TELNET_TIMEOUT)
             self._connected = True
+            self._connects_total += 1
+            self._last_connected_at = time.time()
+            self._last_error = None
             _LOGGER.info("Connected to Denon AVR at %s:%s", self.host, self.port)
 
             self._listen_task = asyncio.create_task(self._listen())
@@ -130,47 +170,130 @@ class DenonTelnetClient:
 
             # initial status poll
             await self._poll_status()
+            if not self._connected:
+                # The poll swallows a send failure; without this the supervisor
+                # would log "up again" for a link that is already gone.
+                raise ConnectionError("link dropped during initial status poll")
         except Exception as exc:
-            _LOGGER.error("Connection failed: %s", exc)
+            # Logged by the supervisor (throttled) — logging at ERROR here would
+            # emit one line every retry for as long as the AVR is switched off.
+            _LOGGER.debug("Connection to %s:%s failed: %s", self.host, self.port, exc)
+            self._last_error = str(exc)
             self._connected = False
+            await self._teardown_socket()
             raise
 
-    async def disconnect(self) -> None:
-        self._shutting_down = True
-        self._connected = False
-        for task in (self._listen_task, self._heartbeat_task, self._reconnect_task):
-            if task:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        if self._writer:
-            self._writer.close()
+    async def _supervisor(self) -> None:
+        """Own the telnet link for the whole process lifetime.
+
+        Reconnects forever with exponential backoff, capped at
+        TELNET_RECONNECT_MAX_DELAY. Deliberately covers the case where the *first*
+        connect already failed — that is the case the old inline reconnect loop
+        could not reach, because it was only ever started from a drop of an
+        already-established connection.
+        """
+        while not self._shutting_down:
+            if self._connected:
+                self._reconnect_attempts = 0
+                await asyncio.sleep(TELNET_SUPERVISOR_INTERVAL)
+                continue
+
+            self._reconnect_attempts += 1
+            attempt = self._reconnect_attempts
             try:
+                await self.connect()
+                _LOGGER.info(
+                    "Telnet link to %s up again after %d attempt(s)", self.host, attempt
+                )
+                self._mark_dirty()
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                delay = min(
+                    TELNET_RECONNECT_DELAY * (2 ** min(attempt - 1, 5)),
+                    TELNET_RECONNECT_MAX_DELAY,
+                )
+                if attempt == 1 or attempt % TELNET_RECONNECT_LOG_EVERY == 0:
+                    _LOGGER.warning(
+                        "Telnet connect to %s:%s failed (attempt %d): %s "
+                        "— retrying every %ds",
+                        self.host, self.port, attempt, exc, delay,
+                    )
+                await asyncio.sleep(delay)
+
+    async def _cancel(self, task: asyncio.Task | None) -> None:
+        """Cancel a task unless it is the one we are currently running in.
+
+        `_handle_disconnect()` is awaited from inside `_listen()`, so a naive
+        cancel there would cancel the caller mid-cleanup.
+        """
+        if task is None or task is asyncio.current_task():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            # Swallow only the cancelled task's own CancelledError. If the
+            # caller itself is being cancelled, propagate it.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+        except Exception:
+            pass
+
+    async def _teardown_socket(self) -> None:
+        """Close the socket and stop its reader/heartbeat, without touching the supervisor.
+
+        The old code never closed the writer on a dropped link, so every reconnect
+        leaked a socket for the lifetime of the process.
+        """
+        await self._cancel(self._listen_task)
+        await self._cancel(self._heartbeat_task)
+        self._listen_task = None
+        self._heartbeat_task = None
+        if self._writer:
+            try:
+                self._writer.close()
                 await self._writer.wait_closed()
             except Exception:
                 pass
         self._writer = None
         self._reader = None
 
+    async def disconnect(self) -> None:
+        self._shutting_down = True
+        self._connected = False
+        await self._cancel(self._supervisor_task)
+        self._supervisor_task = None
+        await self._teardown_socket()
+        await self._cancel(self._broadcaster)
+        self._broadcaster = None
+
     async def send(self, command: str) -> bool:
         """Send a raw telnet command (without CR)."""
-        if not isinstance(command, str) or not _COMMAND_RE.match(command):
+        if not isinstance(command, str) or not COMMAND_RE.match(command):
             _LOGGER.warning("Invalid command rejected: %s", command)
             return False
-            
+
         if not self._connected or not self._writer:
             _LOGGER.warning("Not connected, cannot send: %s", command)
             return False
         try:
-            self._writer.write(f"{command}\r".encode())
-            await self._writer.drain()
-            await asyncio.sleep(COMMAND_INTERVAL)
+            async with self._send_lock:
+                writer = self._writer
+                if not self._connected or writer is None:
+                    _LOGGER.warning("Not connected, cannot send: %s", command)
+                    return False
+                writer.write(f"{command}\r".encode())
+                await writer.drain()
+                await asyncio.sleep(COMMAND_INTERVAL)
             return True
         except Exception as exc:
             _LOGGER.error("Send failed (%s): %s", command, exc)
-            asyncio.create_task(self._handle_disconnect())
+            # awaited, not fire-and-forget: an unreferenced task can be garbage
+            # collected before it runs, and the drop would go unnoticed.
+            await self._handle_disconnect()
             return False
 
     async def refresh(self) -> None:
@@ -181,8 +304,13 @@ class DenonTelnetClient:
 
     async def _poll_status(self) -> None:
         for cmd in QUERY_COMMANDS:
-            await self.send(cmd)
-            await asyncio.sleep(0.08)
+            if not await self.send(cmd):
+                # Link dropped mid-poll. Without this the remaining ~20 query
+                # commands each log "Not connected, cannot send" — 20 warnings
+                # per reconnect, which buries the one line that matters.
+                _LOGGER.debug("Status poll aborted at %s (link down)", cmd)
+                return
+            await asyncio.sleep(POLL_GAP)
 
     async def _listen(self) -> None:
         """Listen for responses. Denon uses \\r (0x0D) as line terminator, not \\n."""
@@ -209,7 +337,7 @@ class DenonTelnetClient:
                         if text:
                             _LOGGER.debug("RX: %s", _redact_rx(text))
                             await self._parse(text)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
         except asyncio.CancelledError:
             raise
@@ -221,358 +349,60 @@ class DenonTelnetClient:
         cmds = ["PW?", "MV?", "MU?"]
         idx = 0
         while self._connected:
-            try:
-                await asyncio.sleep(TELNET_HEARTBEAT_INTERVAL)
-                if self._connected:
-                    await self.send(cmds[idx % len(cmds)])
-                    idx += 1
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                break
+            await asyncio.sleep(TELNET_HEARTBEAT_INTERVAL)
+            if self._connected:
+                # send() never raises (failures return False and mark the link down).
+                await self.send(cmds[idx % len(cmds)])
+                idx += 1
 
     async def _handle_disconnect(self) -> None:
-        if not self._connected and not self._shutting_down:
-            return
-        _LOGGER.warning("Connection lost to %s", self.host)
+        """Mark the link down. The supervisor does the reconnecting.
+
+        Recovery deliberately does NOT happen here. Spawning the retry loop from
+        the drop path means a link that never came up in the first place is never
+        retried, and it made the recovery path depend on which of `_listen()` /
+        `send()` noticed the drop first.
+        """
+        if not self._connected:
+            return  # already handled
+        _LOGGER.warning(
+            "Connection lost to %s — supervisor retries within %ds",
+            self.host, TELNET_SUPERVISOR_INTERVAL,
+        )
         self._connected = False
-        await self._notify()
-        if not self._shutting_down and not self._reconnecting:
-            self._reconnecting = True
-            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        self._mark_dirty()
 
-    async def _reconnect_loop(self) -> None:
-        attempt = 0
-        try:
-            while not self._shutting_down:
-                attempt += 1
-                delay = min(
-                    TELNET_RECONNECT_DELAY * (2 ** min(attempt - 1, 5)),
-                    TELNET_RECONNECT_MAX_DELAY,
-                )
-                _LOGGER.info(
-                    "Reconnect attempt %d to %s in %ds", attempt, self.host, delay
-                )
-                try:
-                    await asyncio.sleep(delay)
-                    await self.connect()
-                    _LOGGER.info("Reconnected to %s", self.host)
-                    return
-                except Exception as exc:
-                    _LOGGER.warning("Reconnect attempt %d failed: %s", attempt, exc)
-                    if TELNET_MAX_RECONNECT and attempt >= TELNET_MAX_RECONNECT:
-                        _LOGGER.error("Max reconnect attempts reached")
-                        return
-        finally:
-            self._reconnecting = False
+    # -- notifications --
 
-    # -- parser --
+    def _mark_dirty(self) -> None:
+        """Schedule one callback round for the current state. Sync, never blocks.
 
-    def _init_handlers(self) -> None:
-        if hasattr(self, "_handlers"):
+        Bursts of parsed lines collapse into a single round: while the
+        broadcaster is running, further marks only set the flag and the loop
+        runs once more when the current round is done.
+        """
+        self._dirty = True
+        if not self._callbacks:
             return
-        self._handlers = [
-            (re.compile(r"^PW(STANDBY|ON)$"), self._handle_power),
-            (re.compile(r"^ZM(ON|OFF)$"), self._handle_zone_main),
-            (re.compile(r"^MV(MAX\s*\d{2,3}|\d{2,3})$"), self._handle_volume),
-            (re.compile(r"^MU(ON|OFF)$"), self._handle_mute),
-            (re.compile(r"^SI(.+)$"), self._handle_source),
-            (re.compile(r"^MS(.+)$"), self._handle_surround_mode),
-            (re.compile(r"^CV([A-Z0-9]+)\s+(\d+)$"), self._handle_channel_volume),
-            (re.compile(r"^PSTONE CTRL(.+)$"), self._handle_tone_ctrl),
-            (re.compile(r"^PSBAS(.+)$"), self._handle_bass),
-            (re.compile(r"^PSTRE(.+)$"), self._handle_treble),
-            (re.compile(r"^PSDIL(.+)$"), self._handle_dialog),
-            (re.compile(r"^PSSWL2(.+)$"), self._handle_subwoofer2),
-            (re.compile(r"^PSSWL(.+)$"), self._handle_subwoofer),
-            (re.compile(r"^PSMULTEQ:(.+)$"), self._handle_multeq),
-            (re.compile(r"^PSDYNEQ(.+)$"), self._handle_dyneq),
-            (re.compile(r"^PSDYNVOL(.+)$"), self._handle_dynvol),
-            (re.compile(r"^PSREFLEV(.+)$"), self._handle_reflev),
-            (re.compile(r"^SLP(.+)$"), self._handle_sleep),
-            (re.compile(r"^ECO(.+)$"), self._handle_eco),
-            (re.compile(r"^NSFRN\s*(.+)$"), self._handle_nsfrn),
-            (re.compile(r"^SSFUN(.+)$"), self._handle_ssfun),
-            (re.compile(r"^SSSOD(.+)$"), self._handle_sssod),
-            (re.compile(r"^SD(.+)$"), self._handle_sd),
-            (re.compile(r"^OPSMLALL(.*)$"), self._handle_opsmlall),
-            # Z2 payloads: power/mute, sleep (SLP<value>), volume (2-3 digits),
-            # or a source code (uppercase + digits + '/', 2-12 chars). The
-            # source class is intentionally tight so unknown Z2... lines do
-            # not silently get stored as z2_source.
-            (
-                re.compile(
-                    r"^Z2(ON|OFF|MUON|MUOFF|SLP[A-Z0-9]+|\d{2,3}|[A-Z][A-Z0-9/]{1,11})$"
-                ),
-                self._handle_zone2,
-            ),
-        ]
+        if self._broadcaster is None or self._broadcaster.done():
+            self._broadcaster = asyncio.create_task(self._broadcast_loop())
 
-    async def _parse(self, line: str) -> None:
-        self._init_handlers()
-        for pattern, handler in self._handlers:
-            match = pattern.match(line)
-            if match:
-                if handler(match):
-                    await self._notify()
-                return
-
-    def _handle_power(self, match: re.Match) -> bool:
-        if match.group(1) == "STANDBY":
-            self.state["power"] = False
-            return True
-        return False
-
-    def _handle_zone_main(self, match: re.Match) -> bool:
-        self.state["power"] = (match.group(1) == "ON")
-        return True
-
-    def _handle_volume(self, match: re.Match) -> bool:
-        val = match.group(1)
-        if val.startswith("MAX"):
-            v = self._parse_volume(val[3:])
-            if v is not None:
-                self.state["volume_max"] = v
-            return False
-        else:
-            v = self._parse_volume(val)
-            if v is not None:
-                self.state["volume"] = v
-                return True
-        return False
-
-    def _handle_mute(self, match: re.Match) -> bool:
-        self.state["muted"] = (match.group(1) == "ON")
-        return True
-
-    def _handle_source(self, match: re.Match) -> bool:
-        self.state["source"] = match.group(1)
-        return True
-
-    def _handle_surround_mode(self, match: re.Match) -> bool:
-        self.state["surround_mode"] = match.group(1)
-        return True
-
-    def _handle_channel_volume(self, match: re.Match) -> bool:
-        ch, val = match.group(1), int(match.group(2))
-        if ch in CHANNEL_NAMES:
-            self.state["channel_volumes"][ch] = val
-            return True
-        return False
-
-    def _handle_tone_ctrl(self, match: re.Match) -> bool:
-        self.state["tone_control"] = (match.group(1).strip() == "ON")
-        return True
-
-    def _handle_bass(self, match: re.Match) -> bool:
-        val = match.group(1).strip()
-        if val not in ("?", ""):
-            try:
-                self.state["bass"] = int(val)
-                return True
-            except ValueError: pass
-        return False
-
-    def _handle_treble(self, match: re.Match) -> bool:
-        val = match.group(1).strip()
-        if val not in ("?", ""):
-            try:
-                self.state["treble"] = int(val)
-                return True
-            except ValueError: pass
-        return False
-
-    def _handle_dialog(self, match: re.Match) -> bool:
-        val = match.group(1).strip()
-        if val == "ON":
-            self.state["dialog_level_enabled"] = True
-            return True
-        elif val == "OFF":
-            self.state["dialog_level_enabled"] = False
-            return True
-        elif val not in ("?", ""):
-            try:
-                self.state["dialog_level"] = int(val)
-                return True
-            except ValueError: pass
-        return False
-
-    def _handle_subwoofer2(self, match: re.Match) -> bool:
-        val = match.group(1).strip()
-        if val not in ("ON", "OFF", "?", ""):
-            try:
-                self.state["subwoofer2_level"] = int(val)
-                return True
-            except ValueError: pass
-        return False
-
-    def _handle_subwoofer(self, match: re.Match) -> bool:
-        val = match.group(1).strip()
-        if val == "OFF":
-            self.state["subwoofer_level"] = None
-            return True
-        elif val not in ("ON", "?", ""):
-            try:
-                self.state["subwoofer_level"] = int(val)
-                return True
-            except ValueError: pass
-        return False
-
-    def _handle_multeq(self, match: re.Match) -> bool:
-        self.state["multeq"] = match.group(1).strip()
-        return True
-
-    def _handle_dyneq(self, match: re.Match) -> bool:
-        val = match.group(1).strip()
-        if val in ("ON", "OFF"):
-            self.state["dynamic_eq"] = (val == "ON")
-            return True
-        return False
-
-    def _handle_dynvol(self, match: re.Match) -> bool:
-        val = match.group(1).strip()
-        if val != "?":
-            self.state["dynamic_volume"] = val
-            return True
-        return False
-
-    def _handle_reflev(self, match: re.Match) -> bool:
-        val = match.group(1).strip()
-        if val != "?":
-            try:
-                self.state["ref_level_offset"] = int(val)
-                return True
-            except ValueError: pass
-        return False
-
-    def _handle_sleep(self, match: re.Match) -> bool:
-        val = match.group(1).strip()
-        if val == "OFF":
-            self.state["sleep_timer"] = None
-            return True
-        else:
-            try:
-                self.state["sleep_timer"] = int(val)
-                return True
-            except ValueError: pass
-        return False
-
-    def _handle_eco(self, match: re.Match) -> bool:
-        val = match.group(1).strip()
-        if val != "?" and val:
-            self.state["eco_mode"] = val
-            return True
-        return False
-
-    def _handle_nsfrn(self, match: re.Match) -> bool:
-        name = match.group(1).strip()
-        if name and name != "?":
-            self.state["friendly_name"] = name
-            return True
-        return False
-
-    def _handle_ssfun(self, match: re.Match) -> bool:
-        payload = match.group(1)
-        if payload.strip() == "END":
-            return False
-        if " " in payload:
-            code, name = payload.split(" ", 1)
-            name = name.strip()
-            if code and name:
-                self.state["source_names"][code] = name
-                return True
-        return False
-
-    def _handle_sssod(self, match: re.Match) -> bool:
-        payload = match.group(1)
-        if payload.strip() == "END":
-            return False
-        if " " in payload:
-            code, status = payload.rsplit(" ", 1)
-            code = code.strip()
-            if code and status == "DEL":
-                self.state["hidden_sources"].add(code)
-                return True
-            elif code and status == "USE":
-                self.state["hidden_sources"].discard(code)
-                return True
-        return False
-
-    def _handle_sd(self, match: re.Match) -> bool:
-        val = match.group(1)
-        if val and val != "?":
-            self.state["sound_decoder"] = val
-            return True
-        return False
-
-    def _handle_opsmlall(self, match: re.Match) -> bool:
-        payload = match.group(1).lstrip()
-        if payload == "END":
-            self.state["surround_mode_list"] = self._opsmlall_buffer
-            self._opsmlall_buffer = []
-            return True
-        elif len(payload) >= 7:
-            cat = payload[:3]
-            sort_id = payload[3:5]
-            active = (payload[5] == "1")
-            display_name = payload[6:]
-            telnet_cmd = KNOWN_MODE_COMMANDS.get(display_name)
-            self._opsmlall_buffer.append({
-                "category": cat,
-                "category_label": SURROUND_CATEGORIES.get(cat, cat),
-                "id": sort_id,
-                "active": active,
-                "display_name": display_name,
-                "command": telnet_cmd,
-            })
-        return False
-
-    def _handle_zone2(self, match: re.Match) -> bool:
-        val = match.group(1)
-        if val == "ON":
-            self.state["z2_power"] = True
-            return True
-        elif val == "OFF":
-            self.state["z2_power"] = False
-            return True
-        elif val == "MUON":
-            self.state["z2_muted"] = True
-            return True
-        elif val == "MUOFF":
-            self.state["z2_muted"] = False
-            return True
-        elif val.startswith("SLP"):
-            v = val[3:].strip()
-            if v == "OFF":
-                self.state["z2_sleep_timer"] = None
-                return True
-            else:
-                try:
-                    self.state["z2_sleep_timer"] = int(v)
-                    return True
-                except ValueError: pass
-        elif val.isdigit():
-            self.state["z2_volume"] = int(val)
-            return True
-        elif val:
-            self.state["z2_source"] = val
-            return True
-        return False
-
-    def _parse_volume(self, s: str) -> float | None:
-        s = s.strip()
-        if not s:
-            return None
-        try:
-            if len(s) == 3 and s[2] == "5":
-                return int(s[:2]) + 0.5
-            return float(int(s))
-        except ValueError:
-            return None
+    async def _broadcast_loop(self) -> None:
+        while self._dirty:
+            self._dirty = False
+            await self._notify()
 
     async def _notify(self) -> None:
+        """Run every callback once with the current state. Exceptions are logged."""
         for cb in self._callbacks:
             try:
                 await cb(self.state)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 _LOGGER.error("Callback error: %s", exc)
+
+    async def flush_notifications(self) -> None:
+        """Wait until every pending callback round has run (tests)."""
+        while self._broadcaster is not None and not self._broadcaster.done():
+            await asyncio.wait({self._broadcaster})

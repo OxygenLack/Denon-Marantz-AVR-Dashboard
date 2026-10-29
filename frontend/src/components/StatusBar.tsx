@@ -2,7 +2,7 @@ import { useState } from 'react'
 import ThemePicker from './ThemePicker'
 import NightModeButton from './NightModeButton'
 import type { ReceiverState, DeviceInfo, PostFn, ThemeName } from '../types'
-import type { NightModeConfigState } from './NightModeModal'
+import type { NightModeConfigChange } from './NightModeModal'
 
 interface Props {
   deviceName?: string
@@ -11,17 +11,22 @@ interface Props {
   post: PostFn
   wsConnected: boolean
   wsConnecting: boolean
-  receiverIp?: string | null
   currentTheme: ThemeName
   onThemeChange: (name: ThemeName) => void
-  onNightModeConfigChange?: (config: NightModeConfigState) => void | Promise<void>
+  onNightModeConfigChange?: NightModeConfigChange
 }
 
-export default function StatusBar({ deviceName, state, info, post, wsConnected, wsConnecting, receiverIp, currentTheme, onThemeChange, onNightModeConfigChange }: Props) {
+export default function StatusBar({ deviceName, state, info, post, wsConnected, wsConnecting, currentTheme, onThemeChange, onNightModeConfigChange }: Props) {
   const [expanded, setExpanded] = useState(false)
   const telnetOk = state?.connected
   const power = state?.power
   const ok = telnetOk && (wsConnected || wsConnecting)
+  // Telnet up but no WebSocket: the page lives on 5 s HTTP polls.
+  const linkLabel = telnetOk
+    ? (wsConnected ? 'Connected' : wsConnecting ? 'Connecting' : 'HTTP fallback')
+    : 'Disconnected'
+  // Only ever shown when the backend says HEOS is down; the normal case renders nothing.
+  const heosDown = state?.heos_connected === false
 
   return (
     <div className="pt-5 pb-3">
@@ -33,9 +38,15 @@ export default function StatusBar({ deviceName, state, info, post, wsConnected, 
             className={`${ok ? 'badge-green' : 'badge-red'} cursor-pointer hover:brightness-110 transition-all`}
           >
             <span className={`w-2 h-2 rounded-full ${ok ? 'bg-denon-green animate-pulse' : 'bg-denon-red'}`} />
-            {telnetOk ? (wsConnected ? 'Connected' : wsConnecting ? 'Connecting' : 'Connected') : 'Disconnected'}
+            {linkLabel}
             <svg className={`w-3 h-3 transition-transform ${expanded ? 'rotate-180' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
           </button>
+          {heosDown && (
+            <span className="badge bg-denon-red/10 text-denon-red/80 border border-denon-red/20" title="HEOS (port 1255) not connected: media transport and radio unavailable">
+              <span className="w-2 h-2 rounded-full border border-denon-red/70" />
+              HEOS offline
+            </span>
+          )}
           <NightModeButton state={state} info={info} post={post} onConfigChange={onNightModeConfigChange} />
           <ThemePicker currentTheme={currentTheme} onThemeChange={onThemeChange} />
         </div>
@@ -45,12 +56,18 @@ export default function StatusBar({ deviceName, state, info, post, wsConnected, 
         <div className="mt-2 p-3 bg-denon-surface/50 rounded-xl border border-denon-border/50 text-xs space-y-1.5 fade-in">
           <div className="flex justify-between">
             <span className="text-denon-muted">Receiver IP</span>
-            <span className="text-denon-text font-mono">{receiverIp || '—'}</span>
+            <span className="text-denon-text font-mono">{info?.receiver_ip || '—'}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-denon-muted">Telnet Connection</span>
             <span className={telnetOk ? 'text-denon-green' : 'text-denon-red'}>
               {telnetOk ? '● Connected' : '● Disconnected'}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-denon-muted">HEOS Connection</span>
+            <span className={heosDown ? 'text-denon-red' : state?.heos_connected ? 'text-denon-green' : 'text-denon-muted'}>
+              {heosDown ? '○ Offline' : state?.heos_connected ? '● Connected' : '—'}
             </span>
           </div>
           <div className="flex justify-between">

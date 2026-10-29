@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import RadioBrowser from './RadioBrowser'
 import type { ReceiverState, SendCommandFn, SourceEntry, RadioFavorite, Zone } from '../types'
 
@@ -97,13 +97,6 @@ function getIcon(code: string, name?: string): React.ReactNode {
   return SOURCE_ICONS[code] || '🔊'
 }
 
-const DEFAULT_SOURCES: Record<string, string> = {
-  PHONO: 'Phono', CD: 'CD', TUNER: 'Tuner', DVD: 'DVD', BD: 'Blu-ray',
-  TV: 'TV Audio', 'SAT/CBL': 'SAT/Cable', MPLAY: 'Media Player',
-  GAME: 'Game', NET: 'Online Music', BT: 'Bluetooth',
-  AUX1: 'AUX1', AUX2: 'AUX2',
-}
-
 interface Props {
   state: ReceiverState
   sendCommand: SendCommandFn
@@ -135,15 +128,13 @@ export default function SourceSelector({
   const [draftName, setDraftName] = useState('')
   const longPressRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  const sourceList = sources.length > 0
-    ? sources
-    : Object.entries(DEFAULT_SOURCES).map(([id, name]) => ({ id, name }))
+  // The tile unmounts on every section switch; a pending long-press must not
+  // fire a reset afterwards.
+  useEffect(() => () => clearTimeout(longPressRef.current), [])
 
-  const getName = (code: string) => sourceNameMap?.[code] || DEFAULT_SOURCES[code] || code
-  const getDefaultName = (code: string) => {
-    const discovered = sources.find(s => s.id === code)?.name
-    return discovered || DEFAULT_SOURCES[code] || code
-  }
+  // /device ships the list (and its names); the grid stays empty until then.
+  const getName = (code: string) => sourceNameMap?.[code] || code
+  const getDefaultName = (code: string) => sources.find(s => s.id === code)?.default_name || code
 
   const beginEdit = (code: string) => {
     setEditingCode(code)
@@ -188,6 +179,8 @@ export default function SourceSelector({
             onClick={() => { setEditMode(v => !v); setEditingCode(null) }}
             className={`text-xs transition-colors ${editMode ? 'text-denon-gold' : 'text-denon-muted hover:text-denon-text'}`}
             title={editMode ? 'Done renaming' : 'Rename inputs'}
+            aria-label={editMode ? 'Done renaming' : 'Rename inputs'}
+            aria-pressed={editMode}
           >
             {editMode ? '✓' : '✏️'}
           </button>
@@ -207,69 +200,83 @@ export default function SourceSelector({
       )}
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-        {sourceList.map(s => {
+        {sources.map(s => {
           const active = heosServiceCode
             ? s.id === heosServiceCode  // Highlight the specific HEOS service button
             : current === s.id
           const displayName = getName(s.id)
           const editing = editingCode === s.id
           const canReset = Boolean(sourceNameOverrides?.[s.id])
+          const tileClass = `relative w-full py-3 px-3 rounded-xl text-sm font-medium transition-all duration-150 text-left overflow-hidden ${
+            active
+              ? 'bg-gradient-to-br from-denon-gold/20 to-amber-500/10 text-denon-gold ring-1 ring-denon-gold/40'
+              : 'bg-denon-surface/70 text-denon-text hover:bg-denon-surface hover:scale-[1.02] active:scale-[0.98]'
+          } ${editMode ? 'ring-1 ring-denon-border/40' : ''}`
+          const icon = <span className="text-base mr-1.5">{getIcon(s.id, displayName)}</span>
+          // Main tile and its chips are siblings: no interactive element nests
+          // inside another, so Tab reaches each of them.
           return (
-            <button
-              key={s.id}
-              onClick={() => editMode ? beginEdit(s.id) : sendCommand(`${prefix}${s.id}`)}
-              onContextMenu={(e) => { e.preventDefault(); resetName(s.id) }}
-              onPointerDown={() => startLongPress(s.id)}
-              onPointerUp={cancelLongPress}
-              onPointerLeave={cancelLongPress}
-              className={`group relative py-3 px-3 rounded-xl text-sm font-medium transition-all duration-150 text-left overflow-hidden ${
-                active
-                  ? 'bg-gradient-to-br from-denon-gold/20 to-amber-500/10 text-denon-gold ring-1 ring-denon-gold/40'
-                  : 'bg-denon-surface/70 text-denon-text hover:bg-denon-surface hover:scale-[1.02] active:scale-[0.98]'
-              } ${editMode ? 'ring-1 ring-denon-border/40' : ''}`}
-              title={editMode && canReset ? `Default: ${getDefaultName(s.id)}` : undefined}
-            >
-              <span className="text-base mr-1.5">{getIcon(s.id, displayName)}</span>
+            <div key={s.id} className="relative">
               {editing ? (
-                <input
-                  autoFocus
-                  value={draftName}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={(e) => setDraftName(e.target.value)}
-                  onBlur={commitEdit}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitEdit()
-                    if (e.key === 'Escape') { setEditingCode(null); setDraftName('') }
-                  }}
-                  className="w-[calc(100%-1.5rem)] bg-denon-dark border border-denon-gold/50 rounded-lg text-xs px-2 py-1 text-denon-text"
-                />
+                <div className={`${tileClass} flex items-center`}>
+                  {icon}
+                  <input
+                    autoFocus
+                    aria-label={`New name for ${displayName}`}
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
+                    onBlur={commitEdit}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitEdit()
+                      if (e.key === 'Escape') { setEditingCode(null); setDraftName('') }
+                    }}
+                    className="min-w-0 flex-1 bg-denon-dark border border-denon-gold/50 rounded-lg text-xs px-2 py-1 text-denon-text"
+                  />
+                </div>
               ) : (
-                <span className="text-xs pr-10">
-                  {displayName}{editMode && <span className="text-denon-muted ml-1">✎</span>}
-                </span>
+                <button
+                  onClick={() => editMode ? beginEdit(s.id) : sendCommand(`${prefix}${s.id}`)}
+                  // Reset gestures (right-click, long-press) only while renaming.
+                  onContextMenu={editMode ? (e) => { e.preventDefault(); resetName(s.id) } : undefined}
+                  onPointerDown={editMode ? () => startLongPress(s.id) : undefined}
+                  onPointerUp={cancelLongPress}
+                  onPointerLeave={cancelLongPress}
+                  aria-pressed={editMode ? undefined : active}
+                  className={tileClass}
+                  title={editMode && canReset ? `Default: ${getDefaultName(s.id)}` : undefined}
+                >
+                  {icon}
+                  <span className="text-xs pr-10">
+                    {displayName}{editMode && <span className="text-denon-muted ml-1">✎</span>}
+                  </span>
+                  {active && (
+                    <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-denon-gold" />
+                  )}
+                </button>
               )}
               {editMode && canReset && !editing && (
-                <span
-                  onClick={(e) => { e.stopPropagation(); resetName(s.id) }}
+                <button
+                  type="button"
+                  onClick={() => resetName(s.id)}
+                  aria-label={`Reset ${displayName} to ${getDefaultName(s.id)}`}
                   className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-denon-dark/80 text-[9px] text-denon-muted hover:text-denon-gold ring-1 ring-denon-border/40"
                   title={`Reset to ${getDefaultName(s.id)}`}
                 >
                   Reset
-                </span>
-              )}
-              {active && (
-                <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-denon-gold" />
+                </button>
               )}
               {s.id === 'IRADIO' && !editMode && (
-                <span
-                  onClick={(e) => { e.stopPropagation(); setRadioBrowserOpen(true) }}
-                  className="absolute bottom-1.5 right-1.5 p-1 rounded-lg bg-denon-surface/80 hover:bg-denon-gold/20 hover:text-denon-gold text-denon-muted transition-all cursor-pointer"
+                <button
+                  type="button"
+                  onClick={() => setRadioBrowserOpen(true)}
+                  aria-label="Browse radio stations"
+                  className="absolute bottom-1.5 right-1.5 p-1 rounded-lg bg-denon-surface/80 hover:bg-denon-gold/20 hover:text-denon-gold text-denon-muted transition-all"
                   title="Browse stations"
                 >
                   <RadioTowerIcon />
-                </span>
+                </button>
               )}
-            </button>
+            </div>
           )
         })}
       </div>

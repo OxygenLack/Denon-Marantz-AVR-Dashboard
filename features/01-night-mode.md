@@ -54,6 +54,16 @@ Each channel can be configured individually: absolute target or dB offset. Confi
 - Receiver disconnected → 503
 - Channel not in current `channel_volumes` → skip with warning log
 - Value out of range after offset → clamp, log warning, apply clamped value
+- Unknown channel code, `absolute` value outside 38–62 or `offset` outside ±24 → 422
+
+**Failure semantics:**
+The snapshot of the original trims is taken only when none is held yet, and a
+failed send never discards it. If a `CV` command fails part-way through an
+Enable, the request returns 502 but the mode is marked enabled ("armed"): the
+snapshot still holds the originals and the modal offers "Disable Now". Disable
+restores every snapshot channel and clears the snapshot only after all restores
+succeeded, so a failed Disable can simply be retried. The scheduler skips its
+tick while the telnet link is down instead of failing every 30 s.
 
 ### New model: `NightModeRequest`
 
@@ -61,7 +71,7 @@ Each channel can be configured individually: absolute target or dB offset. Confi
 
 ```python
 class NightModeChannel(BaseModel):
-    channel: str = Field(..., pattern=r"^[A-Z0-9]{1,4}$")
+    channel: str  # validated against CHANNEL_NAMES
     mode: Literal["absolute", "offset"]
     value: int  # absolute target (38-62) or offset (-24 to +24, applied with clamping)
 

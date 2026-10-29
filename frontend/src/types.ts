@@ -38,8 +38,10 @@ export interface SurroundModeEntry {
 // raw JSON frame is narrowed to ReceiverState at the WebSocket boundary.
 export interface ReceiverState {
   connected: boolean
+  heos_connected?: boolean
   discovering?: boolean
-  theme?: ThemeName
+  // Plain string: the backend validates names, getTheme() falls back on unknown ones.
+  theme?: string
   power?: boolean
   volume?: number
   volume_max?: number
@@ -74,13 +76,21 @@ export interface ReceiverState {
   z2_source?: string
   z2_source_name?: string
   now_playing?: NowPlaying
-  play_state?: 'play' | 'pause' | 'stop'
+  play_state?: string  // 'play' | 'pause' | 'stop' from HEOS
   stream_quality?: string
 }
 
 export interface SourceEntry {
   id: string
   name: string
+  /** Name without the UI rename (env config > receiver > built-in). */
+  default_name?: string
+}
+
+export interface SurroundCategory {
+  code: string     // OPSMLALL category: MOV, MUS, GAM, PUR
+  label: string
+  command: string  // MS<command> cycles the category
 }
 
 export interface UiEffects {
@@ -103,9 +113,27 @@ export interface RadioFavorite {
   station?: string
 }
 
+export type NightModeKind = 'offset' | 'absolute'
+
+export interface NightModeChannelConfig {
+  channel: string
+  mode: NightModeKind
+  value: number
+}
+
+export interface NightModeSchedule {
+  enabled: boolean
+  days: string[]
+  start: string
+  end: string
+  timezone: string
+}
+
+// Mirrors backend NightModeConfigRequest (also the /device.night_mode_config shape).
 export interface NightModeConfig {
-  channels: Record<string, unknown>[]
-  [key: string]: unknown
+  mode: NightModeKind
+  channels: NightModeChannelConfig[]
+  schedule: NightModeSchedule
 }
 
 // Mirrors backend DeviceInfoResponse — GET /api/v1/device.
@@ -119,12 +147,16 @@ export interface DeviceInfo {
   channel_volumes?: Record<string, number>
   channel_names?: Record<string, string>
   receiver_ip?: string | null
-  theme?: ThemeName
+  theme?: string
   ui_effects?: UiEffects
   time_settings?: TimeSettings
   night_mode_config?: NightModeConfig
   radio_favorites?: RadioFavorite[]
-  discovering?: boolean
+  /** Inputs the HEOS transport controls drive. */
+  media_sources?: string[]
+  surround_categories?: SurroundCategory[]
+  /** Fallback mode list for receivers without OPSMLALL. */
+  surround_modes?: string[]
 }
 
 export interface ApiResponse {
@@ -134,7 +166,11 @@ export interface ApiResponse {
   [key: string]: unknown
 }
 
-export type PostFn = (path: string, body?: Record<string, unknown>) => Promise<ApiResponse>
+export type PostFn = (path: string, body?: object) => Promise<ApiResponse>
+
+export type DeleteFn = (path: string) => Promise<ApiResponse>
+
+export type GetFn = <T = unknown>(path: string) => Promise<ApiResponse & { data?: T }>
 
 export type SendCommandFn = (command: string) => void
 

@@ -1,8 +1,8 @@
 """Tests for DenonTelnetClient._parse() — telnet protocol parser."""
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 import pytest
 
@@ -148,6 +148,35 @@ async def test_parse_bass(telnet_client):
 async def test_parse_treble(telnet_client):
     await telnet_client._parse("PSTRE 48")
     assert telnet_client.state["treble"] == 48
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("line", "key", "value"),
+    [
+        ("PSBAS 56", "bass", 56),
+        ("PSTRE 50", "treble", 50),
+        ("PSREFLEV 5", "ref_level_offset", 5),
+        ("PSSWL2 45", "subwoofer2_level", 45),
+    ],
+)
+async def test_int_handlers_parse(telnet_client, line, key, value):
+    await telnet_client._parse(line)
+    assert telnet_client.state[key] == value
+
+
+@pytest.mark.parametrize("payload", [" ?", "", " ON", " OFF", " junk"])
+def test_set_int_skips_non_values(telnet_client, payload):
+    """`_set_int` returns False (no broadcast) for queries, toggles and junk."""
+    import re
+
+    telnet_client._init_handlers()
+    match = re.match(r"^PSSWL2(.*)$", f"PSSWL2{payload}")
+    assert telnet_client._handle_subwoofer2(match) is False
+    assert telnet_client.state["subwoofer2_level"] is None
+    match = re.match(r"^PSBAS(.*)$", "PSBAS ?")
+    assert telnet_client._handle_bass(match) is False
+    assert telnet_client.state["bass"] is None
 
 
 # ── Subwoofer ──────────────────────────────────────────────────────────────────
@@ -385,3 +414,19 @@ async def test_parse_ms_still_works(telnet_client):
     await telnet_client._parse("MSDOLBY AUDIO-DSUR")
     assert telnet_client.state["surround_mode"] == "DOLBY AUDIO-DSUR"
     assert telnet_client.state["surround_mode_list"] == []  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_opsmlall_buffer_is_capped_without_end(telnet_client, caplog):
+    """A receiver that never sends OPSMLALL END must not grow the buffer forever."""
+    from denon.telnet_parser import OPSMLALL_MAX_ENTRIES
+
+    with caplog.at_level("WARNING", logger="denon.telnet_parser"):
+        for i in range(OPSMLALL_MAX_ENTRIES + 50):
+            await telnet_client._parse(f"OPSMLALL MOV{i:03d}1Mode {i}")
+    assert len(telnet_client._opsmlall_buffer) == OPSMLALL_MAX_ENTRIES
+    assert sum("OPSMLALL buffer exceeded" in r.message for r in caplog.records) == 1
+
+    await telnet_client._parse("OPSMLALL END")
+    assert len(telnet_client.state["surround_mode_list"]) == OPSMLALL_MAX_ENTRIES
+    assert telnet_client._opsmlall_buffer == []

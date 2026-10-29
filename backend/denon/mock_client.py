@@ -3,6 +3,27 @@ from __future__ import annotations
 
 from denon.telnet_client import DenonTelnetClient
 
+# Fake HEOS "now playing" so the media card, smart source detection and the
+# stream-quality badge all have something to show. The cover is bundled with
+# the frontend so demo mode works fully offline.
+DEMO_MEDIA_STATE = {
+    "now_playing": {
+        "song": "Midnight City",
+        "artist": "M83",
+        "album": "Hurry Up, We're Dreaming",
+        "image_url": "/demo-album.svg",
+        "mid": "spotify:track:demo",
+        "sid": 4,
+    },
+    "play_state": "play",
+}
+
+# Plausible Audyssey offsets so the Speakers tab shows effective levels.
+DEMO_SPEAKER_CALIBRATION = {
+    "FL": -2.5, "FR": -3.0, "C": -1.5,
+    "SL": -5.0, "SR": -4.5, "SW": -7.5,
+}
+
 
 class MockDenonClient(DenonTelnetClient):
     """Simulates a Denon AVR. No network connection required.

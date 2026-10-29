@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { THEMES, setTheme } from '../theme'
+import { useApi } from '../hooks/useApi'
 import type { ThemeName, Theme } from '../types'
 
 interface Props {
@@ -8,6 +9,7 @@ interface Props {
 }
 
 export default function ThemePicker({ currentTheme, onThemeChange }: Props) {
+  const { post } = useApi()
   const [open, setOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
 
@@ -25,15 +27,8 @@ export default function ThemePicker({ currentTheme, onThemeChange }: Props) {
     setTheme(name)
     onThemeChange(name)
     setOpen(false)
-    try {
-      await fetch('/api/v1/ui-settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ theme: name }),
-      })
-    } catch (err) {
-      console.warn('Could not persist theme:', err)
-    }
+    // Persist + broadcast to the other devices; a failure shows a toast.
+    await post('/ui-settings', { theme: name })
   }
 
   return (
@@ -71,7 +66,7 @@ export default function ThemePicker({ currentTheme, onThemeChange }: Props) {
                   className="w-6 h-6 rounded-full ring-2 ring-offset-2 ring-offset-denon-card transition-all"
                   style={{
                     backgroundColor: theme.accent,
-                    ringColor: currentTheme === name ? theme.accent : 'transparent',
+                    '--tw-ring-color': currentTheme === name ? theme.accent : 'transparent',
                     boxShadow: currentTheme === name
                       ? `0 0 12px ${theme.accent}60`
                       : 'none',

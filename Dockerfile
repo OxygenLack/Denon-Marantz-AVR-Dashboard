@@ -1,17 +1,20 @@
 # ============================================================
 # Stage 1: Build frontend
 # ============================================================
-FROM node:22-alpine AS frontend-build
+FROM node:26-alpine AS frontend-build
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# Egress aus Buildcontainern auf docker-big faellt zeitweise auf IPv6 zurueck,
+# wofuer es keine Route gibt -> ETIMEDOUT/ENETUNREACH gegen registry.npmjs.org.
+# Retries ueberbruecken das, bis die RA-Konfiguration auf pfSense korrigiert ist.
+RUN npm ci --no-audit --no-fund --fetch-retries 5 --fetch-retry-maxtimeout 120000
 COPY frontend/ ./
 RUN npm run build
 
 # ============================================================
 # Stage 2: Production image
 # ============================================================
-FROM python:3.14-slim AS production
+FROM python:3.15-slim AS production
 WORKDIR /app
 
 # Create non-root user and writable data directory
@@ -19,7 +22,10 @@ RUN useradd -r -s /bin/false appuser && mkdir -p /data && chown appuser:appuser 
 
 # Install Python dependencies
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --retries 5 --timeout 120 -r requirements.txt
+
+# pip is not needed at runtime; its vendored msgpack/setuptools trip trivy (HIGH)
+RUN pip uninstall -y pip
 
 # Copy backend code
 COPY backend/ .
@@ -28,7 +34,7 @@ COPY backend/ .
 COPY --from=frontend-build /build/dist /app/static
 
 # Environment
-ENV STATIC_DIR=/app/static
+ENV DENON_DASHBOARD_STATIC_DIR=/app/static
 ENV PYTHONUNBUFFERED=1
 ENV DENON_DASHBOARD_PORT=8080
 ENV DENON_DASHBOARD_DATA_DIR=/data

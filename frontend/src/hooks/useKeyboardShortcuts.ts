@@ -1,10 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
+import { VOLUME } from '../protocol'
 import type { PostFn, ReceiverState, SendCommandFn, Zone } from '../types'
 
 function volumeToHalfStepCommand(volume: number | undefined, delta: number): string {
   const base = Number.isFinite(Number(volume)) ? Number(volume) : 40
-  const next = Math.max(0, Math.min(98, Math.round((base + delta) * 2) / 2))
+  const next = Math.max(VOLUME.min, Math.min(VOLUME.max, Math.round((base + delta) * 2) / 2))
   const whole = Math.floor(next)
   return Number.isInteger(next) ? `MV${String(whole).padStart(2, '0')}` : `MV${String(whole).padStart(2, '0')}5`
 }
@@ -17,12 +18,30 @@ interface UseKeyboardShortcutsArgs {
   setZone: Dispatch<SetStateAction<Zone>>
 }
 
-export function useKeyboardShortcuts({ state, post, sendCommand, zone, setZone }: UseKeyboardShortcutsArgs): void {
+/** Whether a key event belongs to the browser, a form control or an open modal. */
+function shouldIgnore(e: KeyboardEvent): boolean {
+  // Cmd+P must print, Ctrl+M must not mute; a held key must not toggle twice.
+  if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return true
+  // Any open modal (data-modal is set by ModalShell) owns the keyboard.
+  if (document.querySelector('[data-modal]')) return true
+  const target = e.target as HTMLElement | null
+  const tag = target?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return true
+  // Space on a focused button activates that button, not play/pause.
+  if (e.key === ' ' && tag === 'BUTTON') return true
+  return false
+}
+
+export function useKeyboardShortcuts(args: UseKeyboardShortcutsArgs): void {
+  // Latest props for the listener, so it is registered once instead of on
+  // every state push.
+  const latestRef = useRef(args)
+  latestRef.current = args
+
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
-      const tag = (e.target as HTMLElement | null)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      if (document.querySelector('[data-modal="radio"]')) return
+      if (shouldIgnore(e)) return
+      const { state, post, sendCommand, zone, setZone } = latestRef.current
 
       const emitHint = (label: string): void => {
         window.dispatchEvent(new CustomEvent('denon-shortcut', { detail: { key: e.key, label } }))
@@ -76,5 +95,5 @@ export function useKeyboardShortcuts({ state, post, sendCommand, zone, setZone }
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [state, post, sendCommand, zone, setZone])
+  }, [])
 }

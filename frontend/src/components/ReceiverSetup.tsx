@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import ThemePicker from './ThemePicker'
+import { useApi } from '../hooks/useApi'
 import type { ThemeName } from '../types'
 
 interface DiscoveredDevice {
@@ -9,8 +10,10 @@ interface DiscoveredDevice {
   heos_available?: boolean
 }
 
+export type SetupReason = 'no_host' | 'connect_failed'
+
 interface Props {
-  reason?: string
+  reason: SetupReason
   onConnect: (ip: string) => void
   currentTheme: ThemeName
   onThemeChange: (name: ThemeName) => void
@@ -19,6 +22,7 @@ interface Props {
 const README_URL = 'https://github.com/OxygenLack/Denon-Marantz-AVR-Dashboard#quick-start-docker'
 
 export default function ReceiverSetup({ reason, onConnect, currentTheme, onThemeChange }: Props) {
+  const { get, post } = useApi()
   const [scanning, setScanning] = useState(false)
   const [devices, setDevices] = useState<DiscoveredDevice[] | null>(null)
   const [manualIp, setManualIp] = useState('')
@@ -29,36 +33,26 @@ export default function ReceiverSetup({ reason, onConnect, currentTheme, onTheme
     setScanning(true)
     setDevices(null)
     setError(null)
-    try {
-      const res = await fetch('/api/v1/discover')
-      const data = await res.json() as { devices?: DiscoveredDevice[] }
-      setDevices(data.devices || [])
-      if ((data.devices || []).length === 0) {
-        setError('No receivers found. SSDP auto-discovery requires network_mode: host in your compose.yaml. See the setup guide below.')
-      }
-    } catch {
+    const res = await get<{ devices?: DiscoveredDevice[] }>('/discover')
+    setScanning(false)
+    if (!res.ok) {
       setError('Scan failed — the backend may not be reachable.')
-    } finally {
-      setScanning(false)
+      return
+    }
+    const found = res.data?.devices ?? []
+    setDevices(found)
+    if (found.length === 0) {
+      setError('No receivers found. SSDP auto-discovery requires network_mode: host in your compose.yaml. See the setup guide below.')
     }
   }
 
   const connect = async (ip: string) => {
     setConnecting(true)
     setError(null)
-    try {
-      const res = await fetch('/api/v1/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: ip }),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      onConnect(ip)
-    } catch {
-      setError(`Could not connect to ${ip}. Make sure the receiver is on and reachable.`)
-    } finally {
-      setConnecting(false)
-    }
+    const res = await post('/connect', { host: ip })
+    setConnecting(false)
+    if (res.ok) onConnect(ip)
+    else setError(`Could not connect to ${ip}. Make sure the receiver is on and reachable.`)
   }
 
   return (

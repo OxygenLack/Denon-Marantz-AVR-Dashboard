@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="Demo album cover">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b1d6e"/>
+      <stop offset="0.55" stop-color="#8b2f8a"/>
+      <stop offset="1" stop-color="#f2a93b"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.3" cy="0.25" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="200" height="200" rx="14" fill="url(#bg)"/>
+  <rect width="200" height="200" rx="14" fill="url(#glow)"/>
+  <circle cx="100" cy="100" r="58" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="10"/>
+  <circle cx="100" cy="100" r="36" fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="10"/>
+  <circle cx="100" cy="100" r="9" fill="#1a0f2e"/>
+  <path d="M118 62v52.5a14 14 0 1 1-6-11.5V74l-26 7v45.5a14 14 0 1 1-6-11.5V70z" fill="#ffffff" fill-opacity="0.92" transform="translate(-6 0) scale(0.55) translate(80 60)"/>
+</svg>

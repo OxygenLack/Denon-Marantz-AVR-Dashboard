@@ -4,9 +4,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from api.models import SourceRequest, Zone2VolumeRequest
+from dependencies import get_app_state
 from routes._helpers import send_command
 from state import AppState
-from dependencies import get_app_state
 
 router = APIRouter(prefix="/api/v1/zone2", tags=["zone2"])
 

@@ -1,4 +1,5 @@
 import React from 'react'
+import { clearAppCaches } from '../utils/clearAppCaches'
 
 interface ErrorBoundaryProps {
   children: React.ReactNode
@@ -38,14 +39,7 @@ export default class ErrorBoundary extends React.Component<ErrorBoundaryProps, E
               className="btn-primary"
               onClick={async () => {
                 try {
-                  if ('serviceWorker' in navigator) {
-                    const regs = await navigator.serviceWorker.getRegistrations()
-                    await Promise.all(regs.map(r => r.unregister()))
-                  }
-                  if (window.caches) {
-                    const keys = await caches.keys()
-                    await Promise.all(keys.map(k => caches.delete(k)))
-                  }
+                  await clearAppCaches({ allCaches: true })
                 } finally {
                   window.location.reload()
                 }

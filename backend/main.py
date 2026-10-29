@@ -5,20 +5,20 @@ import asyncio
 import json
 import logging
 import os
-import re
 import time
+import urllib.parse
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-import urllib.parse
 
 from config import settings
-from denon.const import COMMAND_PATTERN
+from denon.const import COMMAND_RE
 from denon.discovery import discover_receivers
 from night_mode import reconcile_night_mode_schedule
-from routes import power, volume, audio, zone2, media, status
+from radio_service import cancel_preload, ensure_radio_preload
+from routes import audio, media, metrics, power, radio, status, volume, zone2
 from state import app_state
 
 # ---- Logging ----
@@ -28,12 +28,11 @@ logging.basicConfig(
 )
 _LOGGER = logging.getLogger("denon_dashboard")
 
-# Compiled command regex from shared constant
-_COMMAND_RE = re.compile(COMMAND_PATTERN)
-
 # ---- WebSocket limits ----
 MAX_WS_CLIENTS = 20
 WS_MSG_RATE_LIMIT = 10  # max messages per second per client
+MEDIA_RESYNC_INTERVAL = 30  # seconds between HEOS media-state safety re-polls
+CALIBRATION_RESYNC_INTERVAL = 300  # seconds between Audyssey calibration re-fetches
 
 
 # ---- Background discovery ----
@@ -61,15 +60,55 @@ async def _auto_discover_and_connect() -> None:
         await asyncio.sleep(30)
 
 
-async def _night_mode_scheduler() -> None:
+NIGHT_MODE_TICK_INTERVAL = 30  # seconds between Night Mode schedule checks
+
+
+async def _run_periodic(name: str, interval: float, tick) -> None:
+    """Run ``tick()`` every ``interval`` seconds until cancelled.
+
+    A failing tick is logged at WARNING with the loop name and never ends the
+    loop (these failures used to vanish at DEBUG).
+    """
     while True:
+        await asyncio.sleep(interval)
         try:
-            await asyncio.sleep(30)
-            await reconcile_night_mode_schedule()
+            await tick()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            _LOGGER.debug("Night mode scheduler error: %s", exc)
+            _LOGGER.warning("%s tick failed: %s", name, exc)
+
+
+async def _media_tick() -> None:
+    """Re-poll HEOS now-playing/play-state.
+
+    Change events are the primary path; this is the backstop for the case where
+    they stop arriving without any error surfacing (silent re-registration failure
+    after a HEOS socket drop).
+    """
+    if await app_state.refresh_media_state():
+        await app_state.broadcast_state()
+    # Covers the AVR-in-standby-at-startup case: a preload skipped because HEOS
+    # was down is retried here. No HEOS check needed: the preload finds HEOS
+    # down itself and backs off (1 -> 30 min); this is a no-op once cached or
+    # while backing off.
+    ensure_radio_preload()
+
+
+async def _calibration_tick() -> None:
+    """Re-fetch the Audyssey calibration offsets.
+
+    There is no telnet event for them, so without this the offsets stay at whatever
+    they were when the dashboard connected — a re-run of Audyssey or a level edit in
+    the receiver's setup menu never reaches the UI, and the displayed dB
+    (calibration + trim) stays wrong indefinitely.
+    """
+    if await app_state.refresh_speaker_calibration():
+        await app_state.broadcast_state(force=True)
+
+
+async def _night_mode_tick() -> None:
+    await reconcile_night_mode_schedule()
 
 
 # ---- Lifespan ----
@@ -77,7 +116,7 @@ async def _night_mode_scheduler() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Build source name cache from env config
-    app_state.source_name_cache = settings.source_name_map.copy()
+    app_state.source_name_cache = dict(settings.denon_source_names)
     app_state.load_source_name_overrides()
     app_state.load_ui_settings()
     app_state.load_night_mode_config()
@@ -105,7 +144,15 @@ async def lifespan(app: FastAPI):
 
     # Track background tasks for graceful shutdown
     bg_task: asyncio.Task | None = None
-    night_mode_task: asyncio.Task | None = asyncio.create_task(_night_mode_scheduler())
+    night_mode_task: asyncio.Task = asyncio.create_task(
+        _run_periodic("Night mode scheduler", NIGHT_MODE_TICK_INTERVAL, _night_mode_tick)
+    )
+    media_resync_task: asyncio.Task = asyncio.create_task(
+        _run_periodic("Media state resync", MEDIA_RESYNC_INTERVAL, _media_tick)
+    )
+    calibration_task: asyncio.Task = asyncio.create_task(
+        _run_periodic("Calibration resync", CALIBRATION_RESYNC_INTERVAL, _calibration_tick)
+    )
 
     host = settings.denon_host
     if settings.demo_mode:
@@ -113,17 +160,15 @@ async def lifespan(app: FastAPI):
         await app_state.start_demo()
     elif host:
         _LOGGER.info("Connecting to configured host %s...", host)
-        await app_state.connect_to_host(host)
-        # Preload radio stations in background
-        from routes.media import preload_radio_stations
-        bg_task = asyncio.create_task(preload_radio_stations())
+        await app_state.connect_to_host(host)  # starts the radio preload itself
     else:
         bg_task = asyncio.create_task(_auto_discover_and_connect())
 
     yield
 
     # Graceful shutdown: cancel background tasks
-    for task in (bg_task, night_mode_task):
+    await cancel_preload()
+    for task in (bg_task, night_mode_task, media_resync_task, calibration_task):
         if task and not task.done():
             task.cancel()
             try:
@@ -141,7 +186,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Denon Dashboard API",
     version="1.0.0",
-    description="Control API for Denon AVR receivers (telnet-only)",
+    description="Control API for Denon/Marantz AVR receivers (telnet + HEOS CLI)",
     lifespan=lifespan,
 )
 
@@ -211,31 +256,37 @@ app.include_router(volume.router)
 app.include_router(audio.router)
 app.include_router(zone2.router)
 app.include_router(media.router)
+app.include_router(radio.router)
 app.include_router(status.router)
+# Root-level /metrics — must be registered before the catch-all static mount.
+app.include_router(metrics.router)
 
 
 # ---- WebSocket ----
 
+def _ws_origin_allowed(origin: str, host: str) -> bool:
+    if not origin:
+        return True
+    try:
+        parsed = urllib.parse.urlparse(origin)
+    except Exception:
+        return False
+    if not parsed.netloc:
+        return False
+    if cors_origins:
+        return f"{parsed.scheme}://{parsed.netloc}" in cors_origins
+    return parsed.netloc.lower() == host.lower()
+
+
 @app.websocket("/api/v1/ws")
 async def websocket_endpoint(ws: WebSocket):
-    # Validate Origin to prevent Cross-Site WebSocket Hijacking (CSWSH)
-    origin = ws.headers.get("origin", "")
-    if cors_origins and "*" not in cors_origins:
-        allowed = False
-        if origin:
-            try:
-                parsed_origin = urllib.parse.urlparse(origin)
-                # Reconstruct scheme://netloc for strict matching without trailing paths
-                origin_host = f"{parsed_origin.scheme}://{parsed_origin.netloc}"
-                allowed = origin_host in cors_origins
-            except Exception:
-                pass
-        else:
-            allowed = True  # allow empty origin (non-browser clients)
-            
-        if not allowed:
-            await ws.close(code=4003, reason="Origin not allowed")
-            return
+    # Validate Origin to prevent Cross-Site WebSocket Hijacking (CSWSH).
+    # With CORS_ORIGINS set, the Origin must be one of them. Without it, the
+    # Origin's host:port must equal the request Host (same-origin). An empty
+    # Origin stays allowed: non-browser clients (HA, curl) send none.
+    if not _ws_origin_allowed(ws.headers.get("origin", ""), ws.headers.get("host", "")):
+        await ws.close(code=4003, reason="Origin not allowed")
+        return
 
     # Enforce max client cap
     if len(app_state.ws_clients) >= MAX_WS_CLIENTS:
@@ -246,9 +297,9 @@ async def websocket_endpoint(ws: WebSocket):
     app_state.ws_clients.add(ws)
     _LOGGER.info("WebSocket client connected (%d total)", len(app_state.ws_clients))
     try:
-        # Send current state immediately
-        if app_state.telnet:
-            await ws.send_text(json.dumps(app_state.build_status()))
+        # Send current state immediately, connected or not: the client needs
+        # one frame to leave its "connecting" state.
+        await ws.send_text(json.dumps(app_state.build_status()))
 
         # Per-client rate limiting state
         msg_times: list[float] = []
@@ -267,12 +318,15 @@ async def websocket_endpoint(ws: WebSocket):
 
             try:
                 msg = json.loads(data)
-                cmd = msg.get("command")
-                if cmd and app_state.telnet:
-                    if isinstance(cmd, str) and _COMMAND_RE.fullmatch(cmd):
-                        await app_state.telnet.send(cmd)
             except json.JSONDecodeError:
-                pass
+                continue
+            if not isinstance(msg, dict):
+                continue  # valid JSON but not {"command": ...}
+            cmd = msg.get("command")
+            # Early reject here even though send() validates again: a junk
+            # frame should not reach the telnet client at all.
+            if isinstance(cmd, str) and COMMAND_RE.fullmatch(cmd) and app_state.telnet:
+                await app_state.telnet.send(cmd)
     except WebSocketDisconnect:
         pass
     except Exception as exc:
@@ -286,6 +340,5 @@ async def websocket_endpoint(ws: WebSocket):
 
 # ---- Static files (served last, catches all non-API routes) ----
 
-_STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
-if os.path.isdir(_STATIC_DIR):
-    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
+if os.path.isdir(settings.static_dir):
+    app.mount("/", StaticFiles(directory=settings.static_dir, html=True), name="static")

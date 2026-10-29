@@ -1,5 +1,6 @@
 import { useState, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
+import ModeInfoFields from './ModeInfoFields'
 import type { SoundModeEntry } from '../types'
 
 interface Props {
@@ -7,13 +8,6 @@ interface Props {
   modeInfo: SoundModeEntry | null | undefined
   anchorEl: HTMLElement | null | undefined
 }
-
-const FIELDS: { key: keyof SoundModeEntry; label: string }[] = [
-  { key: 'speakers',    label: 'Speakers' },
-  { key: 'description', label: 'Description' },
-  { key: 'bestFor',     label: 'Best For' },
-  { key: 'notes',       label: 'Notes' },
-]
 
 const POPOVER_WIDTH = 300
 const GAP = 8
@@ -61,16 +55,7 @@ export default function ModeInfoPopover({ modeName, modeInfo, anchorEl }: Props)
       className="bg-denon-card border border-denon-border rounded-xl p-3 shadow-xl shadow-black/40 backdrop-blur-sm fade-in pointer-events-none"
     >
       <div className="text-xs font-semibold text-denon-gold mb-2">{modeName}</div>
-      <div className="space-y-1.5">
-        {FIELDS.map(({ key, label }) => (
-          modeInfo[key] && (
-            <div key={key}>
-              <div className="text-[10px] uppercase tracking-wider text-denon-muted mb-0.5">{label}</div>
-              <div className="text-[11px] text-denon-text leading-relaxed">{modeInfo[key]}</div>
-            </div>
-          )
-        ))}
-      </div>
+      <ModeInfoFields info={modeInfo} compact />
     </div>,
     document.body,
   )

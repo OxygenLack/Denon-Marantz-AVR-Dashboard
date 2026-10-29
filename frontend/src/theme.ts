@@ -31,7 +31,7 @@ export function getTheme(serverDefault?: string | null): ThemeName {
   return 'gold'
 }
 
-/** Apply a theme by name and persist to localStorage. */
+/** Apply a theme by name (sets the CSS variables). Does not persist; see setTheme. */
 export function applyTheme(name: string | null | undefined): ThemeName {
   const key: ThemeName = isThemeName(name) ? name : 'gold'
   const t = THEMES[key]

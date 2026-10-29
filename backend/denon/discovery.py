@@ -8,12 +8,12 @@ import socket
 import time
 from typing import Any
 
+from .const import DEFAULT_HEOS_PORT, DEFAULT_TELNET_PORT
+
 _LOGGER = logging.getLogger(__name__)
 
 SSDP_ADDR = "239.255.255.250"
 SSDP_PORT = 1900
-HEOS_PORT = 1255
-TELNET_PORT = 23
 
 SSDP_TARGETS = [
     "urn:schemas-denon-com:device:ACT-Denon:1",
@@ -75,7 +75,7 @@ def _send_ssdp(st: str, timeout: float) -> list[dict[str, Any]]:
                     "server": server.group(1).strip() if server else None,
                     "usn": usn.group(1).strip() if usn else None,
                 })
-            except socket.timeout:
+            except TimeoutError:
                 break
         sock.close()
     except Exception as exc:
@@ -100,6 +100,7 @@ def _get_model_from_location(location: str | None) -> str | None:
     try:
         import ssl
         import urllib.request
+
         import defusedxml.ElementTree as ET
 
         ctx = ssl.create_default_context()
@@ -128,12 +129,10 @@ def _get_local_subnets() -> list[str]:
                 if len(parts) < 8:
                     continue
                 dest_hex = parts[1]
-                mask_hex = parts[7]
                 # Skip default route and loopback
                 if dest_hex == "00000000":
                     continue
                 dest = socket.inet_ntoa(struct.pack("<L", int(dest_hex, 16)))
-                mask = socket.inet_ntoa(struct.pack("<L", int(mask_hex, 16)))
                 # Only include private LAN ranges (skip 172.x Docker bridges)
                 if dest.startswith("192.168.") or dest.startswith("10."):
                     # Extract /24 prefix
@@ -175,13 +174,13 @@ async def _subnet_scan(subnets: list[str], timeout: float = 3.0) -> list[dict[st
     async def probe(ip: str) -> dict | None:
         async with sem:
             loop = asyncio.get_running_loop()
-            telnet_ok = await loop.run_in_executor(None, _probe_port, ip, TELNET_PORT, 0.3)
+            telnet_ok = await loop.run_in_executor(None, _probe_port, ip, DEFAULT_TELNET_PORT, 0.3)
             if not telnet_ok:
                 return None
             # Quick verify: send PW? and check for a Denon-style response
             try:
                 reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(ip, TELNET_PORT), timeout=1.0
+                    asyncio.open_connection(ip, DEFAULT_TELNET_PORT), timeout=1.0
                 )
                 writer.write(b"PW?\r")
                 await writer.drain()
@@ -192,11 +191,11 @@ async def _subnet_scan(subnets: list[str], timeout: float = 3.0) -> list[dict[st
                     return None  # Not a Denon receiver
             except Exception:
                 return None
-            heos_ok = await loop.run_in_executor(None, _probe_port, ip, HEOS_PORT, 0.5)
+            heos_ok = await loop.run_in_executor(None, _probe_port, ip, DEFAULT_HEOS_PORT, 0.5)
             return {
                 "ip": ip,
                 "model": "Denon/Marantz AVR",
-                "telnet_port": TELNET_PORT,
+                "telnet_port": DEFAULT_TELNET_PORT,
                 "heos_available": heos_ok,
             }
 
@@ -223,20 +222,20 @@ async def discover_receivers(timeout: float = 4.0) -> list[dict[str, Any]]:
     # LAN and subnet scan skips 172.x, so trust the operator's DENON_DASHBOARD_DENON_HOST.
     configured_host = (settings.denon_host or "").strip()
     if configured_host:
-        telnet_ok = await loop.run_in_executor(None, _probe_port, configured_host, TELNET_PORT, 1.0)
+        telnet_ok = await loop.run_in_executor(None, _probe_port, configured_host, DEFAULT_TELNET_PORT, 1.0)
         if telnet_ok:
-            heos_ok = await loop.run_in_executor(None, _probe_port, configured_host, HEOS_PORT, 1.0)
+            heos_ok = await loop.run_in_executor(None, _probe_port, configured_host, DEFAULT_HEOS_PORT, 1.0)
             seen[configured_host] = {
                 "ip": configured_host,
                 "model": "Denon/Marantz AVR (configured)",
-                "telnet_port": TELNET_PORT,
+                "telnet_port": DEFAULT_TELNET_PORT,
                 "heos_available": heos_ok,
             }
             _LOGGER.info("Discovery: seeded from DENON_DASHBOARD_DENON_HOST=%s", configured_host)
         else:
             _LOGGER.warning(
                 "Discovery: DENON_DASHBOARD_DENON_HOST=%s set but telnet:%d not reachable",
-                configured_host, TELNET_PORT,
+                configured_host, DEFAULT_TELNET_PORT,
             )
 
     tasks = [
@@ -263,12 +262,12 @@ async def discover_receivers(timeout: float = 4.0) -> list[dict[str, Any]]:
         if info.get("telnet_port") is not None:
             return info
         model = await loop.run_in_executor(None, _get_model_from_location, info.get("location"))
-        telnet_ok = await loop.run_in_executor(None, _probe_port, ip, TELNET_PORT, 1.0)
-        heos_ok = await loop.run_in_executor(None, _probe_port, ip, HEOS_PORT, 1.0)
+        telnet_ok = await loop.run_in_executor(None, _probe_port, ip, DEFAULT_TELNET_PORT, 1.0)
+        heos_ok = await loop.run_in_executor(None, _probe_port, ip, DEFAULT_HEOS_PORT, 1.0)
         return {
             "ip": ip,
             "model": model or "Denon/Marantz AVR",
-            "telnet_port": TELNET_PORT if telnet_ok else None,
+            "telnet_port": DEFAULT_TELNET_PORT if telnet_ok else None,
             "heos_available": heos_ok,
         }
 

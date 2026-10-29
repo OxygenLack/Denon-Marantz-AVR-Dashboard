@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import ModeInfoFields from './ModeInfoFields'
 import type { SoundModeEntry } from '../types'
 
 interface Props {
@@ -6,13 +7,6 @@ interface Props {
   modeInfo: SoundModeEntry | null | undefined
   onClose: () => void
 }
-
-const FIELDS: { key: keyof SoundModeEntry; label: string }[] = [
-  { key: 'speakers',    label: 'Speakers' },
-  { key: 'description', label: 'Description' },
-  { key: 'bestFor',     label: 'Best For' },
-  { key: 'notes',       label: 'Notes' },
-]
 
 export default function ModeInfoPanel({ modeName, modeInfo, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
@@ -35,16 +29,7 @@ export default function ModeInfoPanel({ modeName, modeInfo, onClose }: Props) {
           ✕
         </button>
       </div>
-      <div className="space-y-2">
-        {FIELDS.map(({ key, label }) => (
-          modeInfo[key] && (
-            <div key={key}>
-              <div className="text-[10px] uppercase tracking-wider text-denon-muted mb-0.5">{label}</div>
-              <div className="text-xs text-denon-text leading-relaxed">{modeInfo[key]}</div>
-            </div>
-          )
-        ))}
-      </div>
+      <ModeInfoFields info={modeInfo} />
     </div>
   )
 }

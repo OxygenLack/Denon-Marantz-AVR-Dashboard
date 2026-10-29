@@ -211,14 +211,14 @@ const MODES: Record<string, SoundModeEntry> = {
 
 /**
  * Look up mode info by display_name.
- * Handles exact match, uppercase fallback (FALLBACK_MODES), and common aliases.
+ * Handles exact match, uppercase fallback (/device surround_modes), and common aliases.
  */
 const UPPER_MAP: Record<string, SoundModeEntry> = {}
 for (const [key, val] of Object.entries(MODES)) {
   UPPER_MAP[key.toUpperCase()] = val
 }
 
-// Extra aliases for FALLBACK_MODES that don't match exactly
+// Extra aliases for the fallback mode names (/device surround_modes) that don't match exactly
 const ALIASES: Record<string, SoundModeEntry> = {
   'MCH STEREO': MODES['Multi Ch Stereo'],
   'PURE DIRECT': MODES['Pure Direct'],
@@ -242,6 +242,14 @@ function normalizeModeKey(displayName: string | null | undefined): string {
     .replace(/\s*-\s*/g, ' - ')
     .trim()
 }
+
+/** Fields shown for a mode, in display order (ModeInfoPanel / ModeInfoPopover). */
+export const MODE_INFO_FIELDS: readonly { key: keyof SoundModeEntry; label: string }[] = [
+  { key: 'speakers',    label: 'Speakers' },
+  { key: 'description', label: 'Description' },
+  { key: 'bestFor',     label: 'Best For' },
+  { key: 'notes',       label: 'Notes' },
+]
 
 export function getModeInfo(displayName: string | null | undefined): SoundModeEntry | null {
   if (!displayName) return null

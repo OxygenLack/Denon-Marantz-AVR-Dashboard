@@ -1,4 +1,6 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useCallback } from 'react'
+import { useDebouncedLevel } from '../hooks/useDebouncedLevel'
+import { TONE, formatDb } from '../protocol'
 import type { ReceiverState, PostFn } from '../types'
 
 interface Props {
@@ -6,37 +8,39 @@ interface Props {
   post: PostFn
 }
 
+interface SliderProps {
+  label: string
+  value: number | undefined
+  onChange: (value: number) => void
+}
+
+function ToneSlider({ label, value, onChange }: SliderProps) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs text-denon-muted">{label}</span>
+        <span className="text-xs tabular-nums text-denon-text">
+          {value != null ? `${formatDb(value, TONE.zeroDb)} dB` : '—'}
+        </span>
+      </div>
+      <input
+        type="range"
+        aria-label={label}
+        min={TONE.min} max={TONE.max} step={1}
+        value={value ?? TONE.zeroDb}
+        onChange={e => onChange(parseInt(e.target.value, 10))}
+        className="w-full"
+      />
+    </div>
+  )
+}
+
 export default function ToneControls({ state, post }: Props) {
-  const toneOn = state?.tone_control
-  const [bass, setBass] = useState<number>(state?.bass ?? 50)
-  const [treble, setTreble] = useState<number>(state?.treble ?? 50)
-  const bassRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const trebleRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    if (state?.bass != null) setBass(state.bass)
-    if (state?.treble != null) setTreble(state.treble)
-  }, [state?.bass, state?.treble])
-
-  const dB = (val: number): string => {
-    const d = val - 50
-    if (d > 0) return `+${d}`
-    return `${d}`
-  }
-
-  const handleBass = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseInt(e.target.value)
-    setBass(v)
-    if (bassRef.current) clearTimeout(bassRef.current)
-    bassRef.current = setTimeout(() => post('/tone', { bass: v }), 200)
-  }, [post])
-
-  const handleTreble = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseInt(e.target.value)
-    setTreble(v)
-    if (trebleRef.current) clearTimeout(trebleRef.current)
-    trebleRef.current = setTimeout(() => post('/tone', { treble: v }), 200)
-  }, [post])
+  const toneOn = state.tone_control
+  const sendBass = useCallback((bass: number) => post('/tone', { bass }), [post])
+  const sendTreble = useCallback((treble: number) => post('/tone', { treble }), [post])
+  const bass = useDebouncedLevel(state.bass, sendBass)
+  const treble = useDebouncedLevel(state.treble, sendTreble)
 
   return (
     <div className="card">
@@ -44,6 +48,7 @@ export default function ToneControls({ state, post }: Props) {
         <h2 className="text-xs font-medium text-denon-muted uppercase tracking-wider">Tone Controls</h2>
         <button
           onClick={() => post('/tone', { enabled: !toneOn })}
+          aria-pressed={Boolean(toneOn)}
           className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-all ${
             toneOn
               ? 'bg-denon-gold/20 text-denon-gold ring-1 ring-denon-gold/30'
@@ -56,28 +61,8 @@ export default function ToneControls({ state, post }: Props) {
 
       {toneOn && (
         <div className="space-y-4 fade-in">
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-xs text-denon-muted">Bass</span>
-              <span className="text-xs tabular-nums text-denon-text">{dB(bass)} dB</span>
-            </div>
-            <input
-              type="range" min={44} max={56} step={1}
-              value={bass} onChange={handleBass}
-              className="w-full"
-            />
-          </div>
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-xs text-denon-muted">Treble</span>
-              <span className="text-xs tabular-nums text-denon-text">{dB(treble)} dB</span>
-            </div>
-            <input
-              type="range" min={44} max={56} step={1}
-              value={treble} onChange={handleTreble}
-              className="w-full"
-            />
-          </div>
+          <ToneSlider label="Bass" value={bass.value} onChange={bass.onChange} />
+          <ToneSlider label="Treble" value={treble.value} onChange={treble.onChange} />
         </div>
       )}
 

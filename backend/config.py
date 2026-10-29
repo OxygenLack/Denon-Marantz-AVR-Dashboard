@@ -1,27 +1,31 @@
 """Application configuration via environment variables."""
 from __future__ import annotations
 
-import json
+from typing import Literal
 
 from pydantic_settings import BaseSettings
 
+from denon.const import DEFAULT_HEOS_PORT, DEFAULT_TELNET_PORT
+
 
 class Settings(BaseSettings):
-    # Dashboard port
+    # Dashboard port. Not read by the app itself: the Dockerfile CMD passes
+    # $DENON_DASHBOARD_PORT to uvicorn. Kept so the variable is documented.
     port: int = 8080
 
     # Receiver IP — leave empty to enable auto-discovery via SSDP
     denon_host: str = ""
-    denon_telnet_port: int = 23
-    denon_heos_port: int = 1255
+    denon_telnet_port: int = DEFAULT_TELNET_PORT
+    denon_heos_port: int = DEFAULT_HEOS_PORT
 
     # Optional display names (auto-detected via telnet if not set)
     denon_device_name: str = "Denon AVR"
     denon_zone1_name: str = "Main Zone"
     denon_zone2_name: str = "Zone 2"
 
-    # Custom source names as JSON: {"GAME":"Game Console","BD":"Blu-ray"}
-    denon_source_names: str = "{}"
+    # Custom source names as a JSON object: {"GAME":"Game Console","BD":"Blu-ray"}.
+    # Parsed by pydantic-settings; anything but an object fails at startup.
+    denon_source_names: dict[str, str] = {}
 
     # Include HEOS/network sources (NET, BT, IRADIO, ...) automatically.
     # Set to false if you only want physical inputs.
@@ -32,7 +36,7 @@ class Settings(BaseSettings):
 
     # Local timezone and time display format for schedules
     timezone: str = "Europe/Berlin"
-    time_format: str = "auto"  # auto, 24h, 12h
+    time_format: Literal["auto", "24h", "12h"] = "auto"
 
     # Optional UI experience effects
     ui_ambient_background: bool = True
@@ -49,12 +53,10 @@ class Settings(BaseSettings):
     # Demo mode: simulate a receiver without a real connection (no AVR needed)
     demo_mode: bool = False
 
-    @property
-    def source_name_map(self) -> dict[str, str]:
-        try:
-            return json.loads(self.denon_source_names)
-        except (json.JSONDecodeError, TypeError):
-            return {}
+    # Persistent JSON files (source names, UI settings, night mode, favorites)
+    data_dir: str = "/data"
+    # Built frontend served at / (skipped when the directory does not exist)
+    static_dir: str = "/app/static"
 
     model_config = {"env_prefix": "DENON_DASHBOARD_", "env_file": ".env"}
 

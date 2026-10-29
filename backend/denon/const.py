@@ -1,17 +1,29 @@
 """Constants for Denon AVR telnet protocol."""
+import re
 
 # Connection defaults
 DEFAULT_TELNET_PORT = 23
 DEFAULT_HTTP_PORT = 10443
+DEFAULT_HEOS_PORT = 1255
+HEOS_RECONNECT_LOG_EVERY = 20  # log every Nth consecutive HEOS connect failure
 TELNET_TIMEOUT = 5.0
 TELNET_RECONNECT_DELAY = 10  # initial delay; doubles up to TELNET_RECONNECT_MAX_DELAY
 TELNET_RECONNECT_MAX_DELAY = 300  # cap at 5 min so an offline AVR doesn't spam logs every 10s
-TELNET_MAX_RECONNECT = 0  # unlimited
+TELNET_SUPERVISOR_INTERVAL = 15  # how often the supervisor re-checks an established link
+TELNET_RECONNECT_LOG_EVERY = 20  # log every Nth consecutive failure (AVRs are off for hours)
 TELNET_HEARTBEAT_INTERVAL = 30
 COMMAND_INTERVAL = 0.05  # 50ms between commands per protocol spec
+# Extra gap between the status-poll queries on top of COMMAND_INTERVAL. A probe
+# (2026-10-23) showed the AVR answers back-to-back queries too; the gap only
+# keeps the initial poll from flooding the receiver right after a connect.
+POLL_GAP = 0.08
 
 # Strict allowlist for raw telnet commands (shared by telnet_client and WebSocket handler)
 COMMAND_PATTERN = r"^[A-Z0-9 :?.+/\-]{1,50}$"
+COMMAND_RE = re.compile(COMMAND_PATTERN)
+
+# Source codes as used in SI<code> / Z2<code> and the source-name endpoints
+SOURCE_CODE_PATTERN = r"^[A-Z0-9/]{1,10}$"
 
 # Volume
 VOLUME_MIN = 0
@@ -133,8 +145,9 @@ SURROUND_CATEGORIES = {
     "PUR": "Pure/Direct",
 }
 
-# Category cycling commands (sent when clicking a category tab)
-CATEGORY_COMMANDS = {
+# Category cycling commands (sent when clicking a category tab), shipped to
+# the frontend via /device.surround_categories
+SURROUND_CATEGORY_COMMANDS = {
     "MOV": "MOVIE",
     "MUS": "MUSIC",
     "GAM": "GAME",
@@ -165,6 +178,10 @@ KNOWN_MODE_COMMANDS = {
     "Multi Ch In": "MULTI CH IN",
     "Multi Ch In 7.1": "MULTI CH IN 7.1",
 }
+
+# Receiver-side media inputs (not HEOS services) that the HEOS transport
+# controls also drive. /device.media_sources = HEOS_SOURCES + these.
+MEDIA_INPUT_SOURCES = ("MPLAY", "USB", "USB/IPOD")
 
 # Fallback surround modes for receivers that don't send OPSMLALL
 SURROUND_MODES = [

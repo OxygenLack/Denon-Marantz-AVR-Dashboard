@@ -6,7 +6,7 @@
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0D0D0D",
-  "theme_color": "#C5A55A",
+  "theme_color": "#0D0D0D",
   "icons": [
     {
       "src": "/denon.svg",

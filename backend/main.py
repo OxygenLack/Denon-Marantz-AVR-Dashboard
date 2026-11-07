@@ -190,6 +190,48 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Origin lists (CORS, frame-ancestors). Each entry must be a full
+# scheme://host[:port] URL. Wildcard '*' is rejected: for CORS it would also
+# bypass the WebSocket Origin check below, for frame-ancestors it would allow
+# any site to clickjack the dashboard.
+def _parse_origins(raw: str, setting: str) -> list[str]:
+    result: list[str] = []
+    for entry in (o.strip() for o in raw.split(",")):
+        if not entry:
+            continue
+        if entry == "*":
+            _LOGGER.warning("%s wildcard '*' rejected; specify explicit origins", setting)
+            continue
+        parsed = urllib.parse.urlparse(entry)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            _LOGGER.warning("Ignoring malformed %s origin: %s", setting, entry)
+            continue
+        result.append(f"{parsed.scheme}://{parsed.netloc}")
+    return result
+
+
+def _frame_policy(raw: str) -> tuple[bytes, list[tuple[bytes, bytes]]]:
+    """CSP header + extra framing headers for DENON_DASHBOARD_FRAME_ANCESTORS.
+
+    Empty: framing denied (frame-ancestors 'none' + X-Frame-Options DENY).
+    Otherwise 'self' plus the listed origins may embed the UI (e.g. a Home
+    Assistant iframe card). X-Frame-Options is dropped then: it cannot express
+    an allow-list, and browsers ignore it once frame-ancestors is present.
+    """
+    allowed = _parse_origins(raw, "FRAME_ANCESTORS")
+    ancestors = "'self' " + " ".join(allowed) if allowed else "'none'"
+    csp = (
+        "default-src 'self'; img-src 'self' http: https:; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; connect-src 'self' ws: wss:; "
+        f"frame-ancestors {ancestors}"
+    ).encode()
+    extra = [] if allowed else [(b"x-frame-options", b"DENY")]
+    return csp, extra
+
+
+_CSP_HEADER, _FRAME_HEADERS = _frame_policy(settings.frame_ancestors)
+
+
 # Security headers (Pure ASGI Middleware)
 class SecurityHeadersMiddleware:
     def __init__(self, app):
@@ -209,10 +251,10 @@ class SecurityHeadersMiddleware:
                 headers = message.setdefault("headers", [])
                 headers.extend([
                     (b"x-content-type-options", b"nosniff"),
-                    (b"x-frame-options", b"DENY"),
+                    *_FRAME_HEADERS,
                     (b"referrer-policy", b"no-referrer"),
                     (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
-                    (b"content-security-policy", b"default-src 'self'; img-src 'self' http: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'")
+                    (b"content-security-policy", _CSP_HEADER),
                 ])
                 if is_sw:
                     headers.append((b"cache-control", b"no-cache, no-store, must-revalidate"))
@@ -223,25 +265,7 @@ class SecurityHeadersMiddleware:
 app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS — configurable via DENON_DASHBOARD_CORS_ORIGINS (empty = same-origin only).
-# Each entry must be a full scheme://host[:port] URL. Wildcard '*' is rejected
-# because it would also bypass the WebSocket Origin check below.
-def _parse_cors_origins(raw: str) -> list[str]:
-    result: list[str] = []
-    for entry in (o.strip() for o in raw.split(",")):
-        if not entry:
-            continue
-        if entry == "*":
-            _LOGGER.warning("CORS wildcard '*' rejected; specify explicit origins")
-            continue
-        parsed = urllib.parse.urlparse(entry)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            _LOGGER.warning("Ignoring malformed CORS origin: %s", entry)
-            continue
-        result.append(f"{parsed.scheme}://{parsed.netloc}")
-    return result
-
-
-cors_origins = _parse_cors_origins(settings.cors_origins)
+cors_origins = _parse_origins(settings.cors_origins, "CORS")
 if cors_origins:
     app.add_middleware(
         CORSMiddleware,

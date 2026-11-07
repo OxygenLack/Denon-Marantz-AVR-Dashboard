@@ -158,17 +158,18 @@ Everything is configured through environment variables prefixed with `DENON_DASH
 | `DENON_DEVICE_NAME` | `Denon AVR` | Name shown in the header. |
 | `DENON_ZONE1_NAME` | `Main Zone` | Label for the main zone tab. |
 | `DENON_ZONE2_NAME` | `Zone 2` | Label for the Zone 2 tab. |
-| `DENON_SOURCE_NAMES` | `{}` | JSON object mapping source codes to display names, e.g. `{"GAME":"PlayStation 5"}`. Anything that is not a JSON object (a list, broken JSON) stops the container at startup. You can also rename sources in the UI. |
+| `DENON_SOURCE_NAMES` | `{}` | JSON object mapping source codes to display names, e.g. `{"GAME":"PlayStation 5"}`. Anything that is not a JSON object (empty, a list, broken JSON) is ignored with a warning in the log. You can also rename sources in the UI. |
 | `HEOS_SOURCES` | `true` | Add network sources (Bluetooth, Internet Radio, Spotify, …) to the source list. The receiver only reports physical inputs on its own. |
 | `THEME` | `gold` | Default accent color. See [Appearance](#appearance). |
 | `TIMEZONE` | `Europe/Berlin` | Timezone for schedules such as Night Mode. |
-| `TIME_FORMAT` | `auto` | `auto`, `24h`, or `12h`. |
+| `TIME_FORMAT` | `auto` | `auto`, `24h`, or `12h`. Unknown values fall back to `auto`. |
 | `UI_AMBIENT_BACKGROUND` | `true` | Animated ambient background. |
 | `UI_AMBIENT_INTENSITY` | `1.0` | Strength of the ambient background, roughly `0.0` to `2.0`. |
 | `UI_SEASONAL_EFFECTS` | `auto` | `auto`, `off`, `winter`, `christmas`, or `halloween`. |
 | `UI_SHORTCUT_OVERLAY` | `true` | Brief on-screen feedback when a keyboard shortcut fires. |
 | `UI_CARD_ANIMATIONS` | `true` | Card hover glow and transitions. |
 | `CORS_ORIGINS` | *(empty)* | Comma-separated allowed origins. Empty means same-origin only. Avoid `*`. |
+| `FRAME_ANCESTORS` | *(empty)* | Comma-separated origins allowed to embed the dashboard in an iframe, e.g. `https://ha.example.com` for a Home Assistant [Webpage card](https://www.home-assistant.io/dashboards/iframe/). Empty means no site may frame it. Avoid `*`. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR`. `DEBUG` logs every telnet line. |
 | `DEMO_MODE` | `false` | Run against a built-in fake receiver. See [Demo mode](#demo-mode). |
 | `DATA_DIR` | `/data` | Where the persistent JSON files live. See [Persistent data](#persistent-data). |

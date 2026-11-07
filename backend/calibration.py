@@ -13,9 +13,11 @@ _MAX_RESPONSE_BYTES = 512 * 1024  # 512 KB
 
 _LOGGER = logging.getLogger(__name__)
 
-# HTTP speaker index to telnet channel code
+# HTTP speaker index to telnet channel code. The receiver numbers the boxes clockwise from front left,
+# so index 1 is the Center and 2 the Front Right (verified against the receiver's own web UI on an
+# AVR-X2700H: index 1 = -4.5 dB is shown there as the Center level).
 SPEAKER_INDEX_MAP = {
-    "0": "FL", "1": "FR", "2": "C", "3": "SW",
+    "0": "FL", "1": "C", "2": "FR", "3": "SW",
     "4": "SR", "5": "SBR", "6": "SB", "7": "SBL",
     "8": "SL", "9": "FHR", "10": "FHL", "11": "FWR",
     "12": "FWL", "13": "TFR", "14": "TFL", "15": "TMR",

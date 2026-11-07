@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, memo } from 'react'
 import { getTheme, applyTheme } from './theme'
 import { useWebSocket } from './hooks/useWebSocket'
 import ReceiverSetup from './components/ReceiverSetup'
-import { useDeviceInfo } from './hooks/useDeviceInfo'
+import { useDeviceInfo, useDeviceInfoSync } from './hooks/useDeviceInfo'
 import { useApi } from './hooks/useApi'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useForegroundEffects } from './hooks/useForegroundEffects'
@@ -46,6 +46,7 @@ const MemoMediaControls = memo(MediaControls)
 export default function App() {
   const { state, wsConnected, wsConnecting, sendCommand } = useWebSocket()
   const { info, reload: reloadDeviceInfo } = useDeviceInfo()
+  useDeviceInfoSync(state, info, reloadDeviceInfo)
   const { post, del } = useApi()
   const [zone, setZone] = useState<Zone>('main')
   useForegroundEffects()

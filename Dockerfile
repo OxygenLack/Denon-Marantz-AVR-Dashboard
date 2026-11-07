@@ -4,9 +4,7 @@
 FROM node:26-alpine AS frontend-build
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
-# Egress aus Buildcontainern auf docker-big faellt zeitweise auf IPv6 zurueck,
-# wofuer es keine Route gibt -> ETIMEDOUT/ENETUNREACH gegen registry.npmjs.org.
-# Retries ueberbruecken das, bis die RA-Konfiguration auf pfSense korrigiert ist.
+# Retries ride out transient network errors (ETIMEDOUT/ENETUNREACH) against the npm registry.
 RUN npm ci --no-audit --no-fund --fetch-retries 5 --fetch-retry-maxtimeout 120000
 COPY frontend/ ./
 RUN npm run build
@@ -18,6 +16,8 @@ FROM python:3.15-slim AS production
 WORKDIR /app
 
 # Create non-root user and writable data directory
+# Pull Debian security fixes the base image does not carry yet (trivy gates the build on fixed HIGH/CRITICAL CVEs).
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*
 RUN useradd -r -s /bin/false appuser && mkdir -p /data && chown appuser:appuser /data
 
 # Install Python dependencies
